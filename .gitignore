@@ -5,3 +5,4 @@ recordings/
 clips/
 __pycache__/
 *.pyc
+ui-error.log

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>LoL Highlights</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="rail">
+  <div class="logo">HL</div>
+  <button class="nav active" data-view="matches" title="Maçlar">
+    <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M4 9h16 M9 9v10"/></svg><span>Maçlar</span>
+  </button>
+  <button class="nav" data-view="log" title="Günlük">
+    <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h5"/></svg><span>Günlük</span>
+  </button>
+  <button class="nav" data-view="settings" title="Ayarlar">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3 M12 19v3 M2 12h3 M19 12h3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M4.9 19.1L7 17 M17 7l2.1-2.1"/></svg><span>Ayarlar</span>
+  </button>
+</aside>
+
+<main>
+  <header class="topbar">
+    <div class="status" id="status"><span class="dot"></span><span id="status-text">Başlatılıyor...</span></div>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="open-clips">Klasörü aç</button>
+    <button class="btn" id="toggle">Durdur</button>
+  </header>
+  <div class="banner hidden" id="banner"></div>
+
+  <!-- Maç listesi -->
+  <section class="view" id="view-matches">
+    <div class="view-head"><h1>Maçlar</h1><span class="muted" id="match-count"></span></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty hidden" id="empty">
+      <h2>Henüz klip yok</h2>
+      <p>Bir maça gir; maç bitince kill ve ölüm anların burada görünecek.</p>
+    </div>
+  </section>
+
+  <!-- Maç detayı -->
+  <section class="view hidden" id="view-match">
+    <div class="view-head">
+      <button class="btn ghost" id="back">← Maçlar</button>
+      <h1 id="m-title"></h1><span class="muted" id="m-sub"></span>
+      <div class="spacer"></div>
+      <button class="btn ghost danger" id="m-delete">Maçı sil</button>
+    </div>
+    <div class="match-layout">
+      <div class="player-col">
+        <div class="player"><video id="video" controls autoplay></video></div>
+        <div class="now">
+          <div><div class="now-title" id="now-title"></div><div class="muted" id="now-sub"></div></div>
+          <div class="spacer"></div>
+          <label class="check"><input type="checkbox" id="autonext" checked> Otomatik sonraki</label>
+          <button class="btn ghost" id="c-show">Dosyayı göster</button>
+          <button class="btn ghost danger" id="c-delete">Klibi sil</button>
+        </div>
+      </div>
+      <div class="clip-col">
+        <div class="filters" id="filters"></div>
+        <ol class="clips" id="clips"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- Günlük -->
+  <section class="view hidden" id="view-log">
+    <div class="view-head"><h1>Günlük</h1></div>
+    <pre class="log" id="log"></pre>
+  </section>
+
+  <!-- Ayarlar -->
+  <section class="view hidden" id="view-settings">
+    <div class="view-head"><h1>Ayarlar</h1></div>
+    <form class="settings" id="settings">
+      <fieldset>
+        <legend>Riot hesabı</legend>
+        <label>API anahtarı
+          <input name="api_key" spellcheck="false" autocomplete="off">
+          <small>Geliştirici anahtarı 24 saatte bir yenilenmeli: developer.riotgames.com</small>
+        </label>
+        <div class="row">
+          <label>Oyuncu adı<input name="game_name"></label>
+          <label>Tag<input name="tag_line"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Hangi anlar klip olsun</legend>
+        <label class="check"><input type="checkbox" name="rule" value="my_kills"> Kill'lerim</label>
+        <label class="check"><input type="checkbox" name="rule" value="my_deaths"> Ölümlerim</label>
+        <label class="check"><input type="checkbox" name="rule" value="my_assists"> Asistlerim</label>
+      </fieldset>
+      <fieldset>
+        <legend>Klip süresi (saniye)</legend>
+        <div class="row">
+          <label>Olaydan önce<input name="pre" type="number" min="0" max="60" step="1"></label>
+          <label>Olaydan sonra<input name="post" type="number" min="0" max="60" step="1"></label>
+          <label>Ölümlerde önce<input name="death_pre" type="number" min="0" max="60" step="1"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Depolama</legend>
+        <label>Saklanacak tam maç kaydı sayısı
+          <input name="keep_recordings" type="number" min="0" max="20" step="1">
+          <small>Klipler hep kalır; bu sadece tam maç videoları için. 0 = hiç saklama.</small>
+        </label>
+      </fieldset>
+      <div class="actions"><button class="btn" type="submit">Kaydet</button><span class="muted" id="saved"></span></div>
+    </form>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
