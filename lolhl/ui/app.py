@@ -42,13 +42,19 @@ def clips_dir(cfg: dict) -> Path:
 
 class Handler(SimpleHTTPRequestHandler):
     clips_root: Path = ROOT / "clips"
+    recordings_root: Path = ROOT / "recordings"
 
     def log_message(self, *_):
         pass
 
     def translate_path(self, path: str) -> str:
         rel = unquote(urlparse(path).path).lstrip("/")
-        base, rel = (self.clips_root, rel[6:]) if rel.startswith("clips/") else (STATIC, rel or "index.html")
+        if rel.startswith("clips/"):
+            base, rel = self.clips_root, rel[len("clips/"):]
+        elif rel.startswith("recordings/"):
+            base, rel = self.recordings_root, rel[len("recordings/"):]
+        else:
+            base, rel = STATIC, rel or "index.html"
         target = (base / rel).resolve()
         # klasör dışına çıkmayı engelle
         return str(target) if target.is_relative_to(base.resolve()) else str(STATIC / "404")
@@ -88,6 +94,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def start_server(cfg: dict) -> int:
     Handler.clips_root = clips_dir(cfg)
+    Handler.recordings_root = Path(cfg["obs"]["recordings_dir"])
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv.server_address[1]
@@ -144,8 +151,24 @@ class Api:
                 "logs": logs[since:] if since <= len(logs) else logs, "log_count": len(logs)}
 
     # --- maçlar ---
+    def _recordings(self) -> dict[str, dict]:
+        """match_id -> tam maç kaydı (saklanan son kayıtlar)."""
+        rec_dir = Path(self.cfg["obs"]["recordings_dir"])
+        out = {}
+        for sidecar in rec_dir.glob("*.json"):
+            try:
+                meta = json.loads(sidecar.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            video = Path(meta.get("video") or sidecar.with_suffix(".mp4"))
+            if video.is_file() and video.parent.resolve() == rec_dir.resolve():
+                out[meta["match_id"]] = {"url": f"/recordings/{video.name}",
+                                         "offset": meta["offset"]}
+        return out
+
     def matches(self):
         root = clips_dir(self.cfg)
+        recordings = self._recordings()
         out = []
         for meta_file in root.glob("*/highlights.json"):
             folder = meta_file.parent
@@ -171,6 +194,7 @@ class Api:
                 "kda": meta.get("kda"),
                 "created": meta.get("created") or meta_file.stat().st_mtime,
                 "clips": clips,
+                "recording": recordings.get(meta.get("match_id")),
             })
         return sorted(out, key=lambda m: m["created"], reverse=True)
 

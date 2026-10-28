@@ -48,13 +48,32 @@
     </div>
     <div class="match-layout">
       <div class="player-col">
+        <div class="modes" id="modes">
+          <button class="mode on" data-mode="clips">Klipler</button>
+          <button class="mode" data-mode="full">Tam maç</button>
+        </div>
         <div class="player"><video id="video" controls autoplay></video></div>
+        <div class="markers hidden" id="markers" title="Olaya gitmek için tıkla"></div>
+        <div class="controls">
+          <div class="speeds" id="speeds">
+            <span class="muted">Hız</span>
+            <button data-r="0.25">0.25×</button><button data-r="0.5">0.5×</button>
+            <button data-r="1" class="on">1×</button><button data-r="1.5">1.5×</button><button data-r="2">2×</button>
+          </div>
+          <div class="step">
+            <button id="back5" title="5 sn geri (←)">−5 sn</button>
+            <button id="prevf" title="Bir kare geri (,)">‹ kare</button>
+            <button id="nextf" title="Bir kare ileri (.)">kare ›</button>
+            <button id="fwd5" title="5 sn ileri (→)">+5 sn</button>
+          </div>
+          <span class="muted keys">Kısayollar: Boşluk oynat/durdur · ← → 5 sn · , . kare · [ ] hız</span>
+        </div>
         <div class="now">
           <div><div class="now-title" id="now-title"></div><div class="muted" id="now-sub"></div></div>
           <div class="spacer"></div>
-          <label class="check"><input type="checkbox" id="autonext" checked> Otomatik sonraki</label>
-          <button class="btn ghost" id="c-show">Dosyayı göster</button>
-          <button class="btn ghost danger" id="c-delete">Klibi sil</button>
+          <label class="check clip-only"><input type="checkbox" id="autonext" checked> Otomatik sonraki</label>
+          <button class="btn ghost clip-only" id="c-show">Dosyayı göster</button>
+          <button class="btn ghost danger clip-only" id="c-delete">Klibi sil</button>
         </div>
       </div>
       <div class="clip-col">

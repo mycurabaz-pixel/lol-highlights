@@ -47,6 +47,7 @@ async function loadMatches() {
     const n = tagCounts(m.clips);
     const kda = m.kda ? `<span class="kda"><b>${m.kda[0]}</b> / <b>${m.kda[1]}</b> / <b>${m.kda[2]}</b></span>` : "";
     return `<div class="card" data-i="${i}" style="background-image:url('${SPLASH(esc(m.icon))}')">
+      ${m.recording ? `<span class="badge-full">${i === 0 ? "Son oyun · " : ""}Tam kayıt</span>` : ""}
       <span class="pill">${m.clips.length} klip</span>
       <div class="card-body">
         <div class="card-champ">${esc(m.champion)}</div>
@@ -65,15 +66,63 @@ function visibleClips() {
   return current.clips.filter((c) => c.moments.some((m) => filter.has(m.tag)));
 }
 
-function openMatch(m) {
+function openMatch(m, startMode = "clips") {
   current = m;
   $("#m-title").textContent = m.champion;
   $("#m-sub").textContent = `${m.kda ? m.kda.join(" / ") + " · " : ""}${m.match_id} · ${ago(m.created)}`;
+  const full = document.querySelector('.mode[data-mode="full"]');
+  full.disabled = !m.recording;
+  full.title = m.recording ? "" : "Bu maçın tam kaydı saklanmıyor (sadece son maçlar saklanır)";
   renderFilters();
-  renderClips();
   show("match");
-  if (visibleClips().length) play(0);
+  setMode(m.recording ? startMode : "clips");
 }
+
+// ---------- klipler / tam maç ----------
+let mode = "clips";
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll(".mode").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+  document.querySelectorAll(".clip-only").forEach((el) => el.classList.toggle("hidden", m === "full"));
+  $("#markers").classList.toggle("hidden", m !== "full");
+  playing = -1;
+  renderClips();
+  if (m === "full") {
+    const v = $("#video");
+    v.src = encodeURI(current.recording.url);
+    v.addEventListener("loadedmetadata", renderMarkers, { once: true });
+    $("#now-title").textContent = "Tam maç";
+    $("#now-sub").textContent = "Listeden ya da çizelgeden bir ana tıkla";
+  } else if (visibleClips().length) play(0);
+}
+
+document.querySelectorAll(".mode").forEach((b) => (b.onclick = () => !b.disabled && setMode(b.dataset.mode)));
+
+// tam maçta oyun saati -> video saati
+const videoTime = (gameTime) => gameTime + current.recording.offset;
+
+function renderMarkers() {
+  const v = $("#video");
+  if (mode !== "full" || !v.duration) return;
+  const marks = current.clips.flatMap((c) => c.moments).filter((m) => filter.has(m.tag));
+  $("#markers").innerHTML = marks.map((m) =>
+    `<span class="mk ${m.tag}" style="left:${(videoTime(m.game_time) / v.duration) * 100}%"
+      title="${mmss(m.game_time)} · ${TAGS[m.tag] || m.tag}: ${esc(m.label)}"></span>`).join("") +
+    `<span class="head" id="head"></span>`;
+}
+
+$("#markers").onclick = (e) => {
+  const v = $("#video");
+  const r = e.currentTarget.getBoundingClientRect();
+  v.currentTime = ((e.clientX - r.left) / r.width) * v.duration;
+};
+
+$("#video").addEventListener("timeupdate", () => {
+  const v = $("#video");
+  const head = $("#head");
+  if (mode === "full" && head && v.duration) head.style.left = `${(v.currentTime / v.duration) * 100}%`;
+});
 
 function renderFilters() {
   const n = tagCounts(current.clips);
@@ -86,6 +135,7 @@ function renderFilters() {
     playing = -1;
     renderFilters();
     renderClips();
+    renderMarkers();
   }));
 }
 
@@ -108,8 +158,14 @@ function play(i) {
   if (!list[i]) return;
   playing = i;
   const c = list[i];
-  $("#video").src = encodeURI(c.url).replace(/\+/g, "%2B");
-  $("#video").play().catch(() => {});
+  const v = $("#video");
+  if (mode === "full") {
+    // tam maçta klibin olduğu ana sar; öncesini de görmek için 10 sn geriden başla
+    v.currentTime = Math.max(0, videoTime(c.time) - 10);
+  } else {
+    v.src = encodeURI(c.url).replace(/\+/g, "%2B");
+  }
+  v.play().catch(() => {});
   $("#now-title").textContent = c.moments.map((m) => TAGS[m.tag] || m.tag).join(" + ") + ` · ${mmss(c.time)}`;
   $("#now-sub").textContent = c.moments.map((m) => m.label).join(" · ");
   renderClips();
@@ -117,7 +173,44 @@ function play(i) {
 }
 
 $("#video").addEventListener("ended", () => {
-  if ($("#autonext").checked && playing + 1 < visibleClips().length) play(playing + 1);
+  if (mode === "clips" && $("#autonext").checked && playing + 1 < visibleClips().length) play(playing + 1);
+});
+
+// ---------- hız ve kare kare ----------
+const RATES = [0.25, 0.5, 1, 1.5, 2];
+const FRAME = 1 / 60;
+let rate = 1;
+try { rate = +localStorage.getItem("rate") || 1; } catch {}
+
+function setRate(r) {
+  rate = r;
+  $("#video").playbackRate = r;
+  $("#video").defaultPlaybackRate = r; // yeni klipte de korunsun
+  document.querySelectorAll("#speeds button").forEach((b) => b.classList.toggle("on", +b.dataset.r === r));
+  try { localStorage.setItem("rate", r); } catch {}
+}
+setRate(rate);
+$("#video").addEventListener("loadeddata", () => ($("#video").playbackRate = rate));
+document.querySelectorAll("#speeds button").forEach((b) => (b.onclick = () => setRate(+b.dataset.r)));
+
+const seek = (d) => { const v = $("#video"); v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + d)); };
+const stepFrame = (d) => { $("#video").pause(); seek(d * FRAME); };
+$("#back5").onclick = () => seek(-5);
+$("#fwd5").onclick = () => seek(5);
+$("#prevf").onclick = () => stepFrame(-1);
+$("#nextf").onclick = () => stepFrame(1);
+
+document.addEventListener("keydown", (e) => {
+  if ($("#view-match").classList.contains("hidden") || e.target.matches("input, textarea")) return;
+  const v = $("#video");
+  const i = RATES.indexOf(rate);
+  const keys = {
+    " ": () => (v.paused ? v.play() : v.pause()),
+    ArrowLeft: () => seek(-5), ArrowRight: () => seek(5),
+    ",": () => stepFrame(-1), ".": () => stepFrame(1),
+    "[": () => setRate(RATES[Math.max(0, i - 1)]), "]": () => setRate(RATES[Math.min(RATES.length - 1, i + 1)]),
+  };
+  if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
 });
 
 $("#back").onclick = () => { show("matches"); loadMatches(); };

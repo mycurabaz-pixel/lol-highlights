@@ -126,6 +126,35 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .clip-label { font-size: 12.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .clip-dur { font-size: 12px; color: var(--muted); }
 
+/* mod sekmeleri, hız, zaman çizelgesi */
+.modes { display: flex; gap: 4px; margin-bottom: 10px; }
+.mode { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 5px 14px; border-radius: 7px; }
+.mode.on { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+.mode:disabled { opacity: .35; cursor: default; }
+.controls { display: flex; align-items: center; gap: 14px; padding-top: 10px; flex-wrap: wrap; }
+.speeds, .step { display: flex; align-items: center; gap: 4px; }
+.speeds .muted { margin-right: 4px; font-size: 12.5px; }
+.speeds button, .step button {
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+  padding: 3px 9px; border-radius: 6px; font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.speeds button:hover, .step button:hover { color: var(--text); }
+.speeds button.on { color: #111; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.keys { font-size: 11.5px; margin-left: auto; }
+.markers { position: relative; height: 22px; margin-top: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.markers .mk { position: absolute; top: 3px; bottom: 3px; width: 3px; margin-left: -1px; border-radius: 2px; }
+.markers .mk.kill { background: var(--kill); }
+.markers .mk.death { background: var(--death); }
+.markers .mk.assist { background: var(--assist); }
+.markers .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); opacity: .8; pointer-events: none; }
+.badge-full { position: absolute; top: 10px; left: 10px; z-index: 1; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; background: var(--accent); color: #111; }
+
+@media (max-width: 1100px) {
+  .match-layout { grid-template-columns: 1fr; height: auto; }
+  .clip-col { max-height: 340px; }
+  .keys { display: none; }
+}
+
 /* günlük */
 .log {
   margin: 0; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
