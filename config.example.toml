@@ -1,0 +1,30 @@
+# Bu dosyayı config.toml olarak kopyala ve doldur.
+
+[riot]
+api_key = "RGAPI-xxxxxxxx"     # developer.riotgames.com
+platform = "TR1"
+game_name = "OyuncuAdın"        # sadece `process` komutu için; watch client'tan okur
+tag_line = "TR1"
+
+[lol]
+install_dir = "C:/Riot Games/League of Legends"
+
+[obs]
+host = "localhost"
+port = 4455                     # OBS > Araçlar > WebSocket Sunucu Ayarları
+exe = "D:/SteamLibrary/steamapps/common/OBS Studio/bin/64bit/obs64.exe"   # kapalıysa otomatik açılır
+password = ""
+
+[clips]
+output_dir = "clips"
+merge_gap = 3.0                 # aradaki boşluk bu kadar saniyeden azsa klipleri birleştir
+reencode = false                # false: hızlı ama kesim keyframe'e yuvarlanır
+
+[rules]
+# Mevcut: my_kills, my_deaths, my_assists
+enabled = ["my_kills", "my_deaths"]
+pre = 10.0
+post = 5.0
+
+[rules.my_deaths]
+pre = 15.0                      # ölümlerde neyin yanlış gittiğini görmek için daha uzun

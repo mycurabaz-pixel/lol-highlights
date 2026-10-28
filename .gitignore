@@ -1,0 +1,7 @@
+# API anahtarı ve OBS şifresi içerir — asla commit'leme
+config.toml
+
+recordings/
+clips/
+__pycache__/
+*.pyc
