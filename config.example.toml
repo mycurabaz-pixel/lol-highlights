@@ -14,6 +14,7 @@ host = "localhost"
 port = 4455                     # OBS > Araçlar > WebSocket Sunucu Ayarları
 exe = "D:/SteamLibrary/steamapps/common/OBS Studio/bin/64bit/obs64.exe"   # kapalıysa otomatik açılır
 recordings_dir = "D:/lol-highlights/recordings"   # OBS kayıt yolu ile aynı olmalı
+keep_recordings = 1          # en yeni kaç maçın tam kaydı kalsın (0 = hepsini sil)
 password = ""
 
 [clips]

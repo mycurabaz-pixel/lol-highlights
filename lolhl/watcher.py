@@ -40,6 +40,20 @@ def process_pending(rec_dir: Path, api: RiotApi, puuid: str, cfg: dict) -> None:
         handle(sidecar, api, puuid, cfg, timeout=0)
 
 
+def cleanup(rec_dir: Path, keep: int) -> None:
+    """En yeni `keep` maç kaydı dışındaki, işi bitmiş kayıtları siler.
+    Yalnızca bu programın yazdığı (.json'u olan) kayıtlara dokunur."""
+    sidecars = sorted(rec_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for sidecar in sidecars[keep:]:
+        meta = json.loads(sidecar.read_text())
+        if not (meta.get("processed") or meta.get("tries", 0) >= MAX_TRIES):
+            continue  # klipleri henüz çıkmadı, silme
+        video = Path(meta.get("video") or sidecar.with_suffix(".mp4"))
+        video.unlink(missing_ok=True)
+        sidecar.unlink()
+        print(f"Eski kayıt silindi: {video.name}")
+
+
 def run(cfg: dict) -> None:
     lcu = Lcu(cfg["lol"]["install_dir"])
     api = RiotApi(cfg["riot"]["api_key"], cfg["riot"]["platform"])
@@ -47,7 +61,10 @@ def run(cfg: dict) -> None:
     rec_dir = Path(cfg["obs"]["recordings_dir"])
     rec: ObsRecorder | None = None
 
+    keep = cfg["obs"].get("keep_recordings", 1)
+
     process_pending(rec_dir, api, puuid, cfg)
+    cleanup(rec_dir, keep)
     print("Bekleniyor... (Ctrl+C ile çık)")
     while True:
         phase = lcu.phase()
@@ -89,4 +106,5 @@ def run(cfg: dict) -> None:
                                        "offset": offset, "video": video}))
         handle(sidecar, api, puuid, cfg, timeout=300)
         process_pending(rec_dir, api, puuid, cfg)
+        cleanup(rec_dir, keep)
         print("Bekleniyor...")
