@@ -47,10 +47,11 @@ class ObsRecorder:
         self.cl = obs.ReqClient(host=host, port=port, password=password, timeout=5)
 
     def start(self) -> float:
-        """Kaydı başlatır, kaydın başladığı duvar saatini döner."""
+        """Kaydı başlatır, kaydın başladığı duvar saatini döner.
+        Zaten kayıt varsa (örn. watcher maç ortasında yeniden açıldıysa) onu sürdürür;
+        offset OBS'nin sayacından ölçüldüğü için doğru kalır."""
         if self.cl.get_record_status().output_active:
-            self.cl.stop_record()
-            time.sleep(1)
+            return time.time() - self.elapsed()
         self.cl.start_record()
         while not self.cl.get_record_status().output_active:
             time.sleep(0.05)

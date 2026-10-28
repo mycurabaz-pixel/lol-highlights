@@ -12,13 +12,42 @@ from .pipeline import process
 from .recorder import ObsRecorder, ensure_obs
 from .riot_api import RiotApi
 
+MAX_TRIES = 3  # pratik modu gibi API'ye hiç düşmeyen maçlar sonsuza dek denenmesin
+
+
+def handle(sidecar: Path, api: RiotApi, puuid: str, cfg: dict, timeout: float) -> None:
+    """Bir kaydı işler ve sonucu yan .json dosyasına yazar."""
+    meta = json.loads(sidecar.read_text())
+    video = meta.get("video") or str(sidecar.with_suffix(".mp4"))
+    try:
+        process(api.load(meta["match_id"], puuid, timeout), video, meta["offset"], cfg)
+        meta["processed"] = True
+    except Exception as e:  # watcher ölmesin
+        meta["tries"] = meta.get("tries", 0) + 1
+        print(f"İşleme hatası ({meta['tries']}/{MAX_TRIES}): {e}")
+    sidecar.write_text(json.dumps(meta))
+
+
+def process_pending(rec_dir: Path, api: RiotApi, puuid: str, cfg: dict) -> None:
+    """Önceden işlenememiş kayıtları (watcher erken kapandıysa vb.) tamamlar."""
+    for sidecar in sorted(rec_dir.glob("*.json")):
+        meta = json.loads(sidecar.read_text())
+        if meta.get("processed") or meta.get("tries", 0) >= MAX_TRIES:
+            continue
+        if not Path(meta.get("video") or sidecar.with_suffix(".mp4")).exists():
+            continue
+        print(f"Bekleyen kayıt işleniyor: {sidecar.stem}")
+        handle(sidecar, api, puuid, cfg, timeout=0)
+
 
 def run(cfg: dict) -> None:
     lcu = Lcu(cfg["lol"]["install_dir"])
     api = RiotApi(cfg["riot"]["api_key"], cfg["riot"]["platform"])
+    puuid = api.puuid(cfg["riot"]["game_name"], cfg["riot"]["tag_line"])
+    rec_dir = Path(cfg["obs"]["recordings_dir"])
     rec: ObsRecorder | None = None
-    puuid = None
 
+    process_pending(rec_dir, api, puuid, cfg)
     print("Bekleniyor... (Ctrl+C ile çık)")
     while True:
         phase = lcu.phase()
@@ -35,8 +64,6 @@ def run(cfg: dict) -> None:
             time.sleep(2)
             continue
 
-        if puuid is None and (me := lcu.me()):
-            puuid = api.puuid(*me)
         game_id = lcu.game_id()
         rec.start()
         print(f"Maç başladı (gameId={game_id}), kayıt açık.")
@@ -55,12 +82,11 @@ def run(cfg: dict) -> None:
             continue
         offset = statistics.median(offsets)
         print(f"Maç bitti. Video: {video}, offset={offset:.2f}s")
+        print("Klipler hazırlanıyor, pencereyi kapatma...")
 
-        match_id = api.match_id_from_game_id(game_id)
         sidecar = Path(video).with_suffix(".json")
-        sidecar.write_text(json.dumps({"match_id": match_id, "offset": offset}))
-
-        try:
-            process(api.load(match_id, puuid), video, offset, cfg)
-        except Exception as e:  # watcher ölmesin; sonra `process` ile tekrar denenebilir
-            print(f"İşleme hatası: {e}\n  Tekrar dene: python -m lolhl process \"{video}\"")
+        sidecar.write_text(json.dumps({"match_id": api.match_id_from_game_id(game_id),
+                                       "offset": offset, "video": video}))
+        handle(sidecar, api, puuid, cfg, timeout=300)
+        process_pending(rec_dir, api, puuid, cfg)
+        print("Bekleniyor...")

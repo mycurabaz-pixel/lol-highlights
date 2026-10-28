@@ -53,14 +53,16 @@ class RiotApi:
     def wait_for_match(self, match_id: str, timeout: float = 300, every: float = 15) -> dict:
         """Maç bitince API'ye düşmesi biraz sürebilir."""
         end = time.time() + timeout
-        while time.time() < end:
+        while True:  # timeout=0 olsa da en az bir kez sor
             if (d := self._get(f"/lol/match/v5/matches/{match_id}")):
                 return d
+            if time.time() + every > end:
+                break
             time.sleep(every)
         raise TimeoutError(f"{match_id} API'de görünmedi")
 
-    def load(self, match_id: str, puuid: str) -> MatchData:
-        info = self.wait_for_match(match_id)
+    def load(self, match_id: str, puuid: str, timeout: float = 300) -> MatchData:
+        info = self.wait_for_match(match_id, timeout)
         tl = self._get(f"/lol/match/v5/matches/{match_id}/timeline")
         if tl is None:
             raise RuntimeError(f"Timeline yok: {match_id}")

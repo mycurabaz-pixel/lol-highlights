@@ -13,6 +13,7 @@ install_dir = "C:/Riot Games/League of Legends"
 host = "localhost"
 port = 4455                     # OBS > Araçlar > WebSocket Sunucu Ayarları
 exe = "D:/SteamLibrary/steamapps/common/OBS Studio/bin/64bit/obs64.exe"   # kapalıysa otomatik açılır
+recordings_dir = "D:/lol-highlights/recordings"   # OBS kayıt yolu ile aynı olmalı
 password = ""
 
 [clips]
