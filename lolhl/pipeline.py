@@ -11,14 +11,15 @@ from .rules import build_rules, find_highlights
 
 def process(m: MatchData, video: str, offset: float, cfg: dict) -> list[Path]:
     hls = find_highlights(m, build_rules(cfg["rules"]))
-    clips = plan_clips(hls, offset, cfg["clips"]["merge_gap"], video_duration(video))
+    tool_dir = cfg["clips"].get("ffmpeg_dir", "")
+    clips = plan_clips(hls, offset, cfg["clips"]["merge_gap"], video_duration(video, tool_dir))
 
     out_dir = Path(cfg["clips"]["output_dir"]) / f"{m.match_id}_{m.me.champion}"
     print(f"{m.match_id} | {m.me.champion} | {len(hls)} an -> {len(clips)} klip")
     for c in clips:
         print(f"  {c.name}: " + ", ".join(h.label for h in c.highlights))
 
-    paths = cut(video, clips, out_dir, cfg["clips"]["reencode"])
+    paths = cut(video, clips, out_dir, cfg["clips"]["reencode"], tool_dir)
     (out_dir / "highlights.json").write_text(json.dumps({
         "match_id": m.match_id, "video": video, "offset": offset,
         "clips": [{"file": p.name, "start": c.start, "end": c.end,

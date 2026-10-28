@@ -44,15 +44,15 @@ def plan_clips(hls: list[Highlight], offset: float, merge_gap: float,
     return clips
 
 
-def ffmpeg_path() -> str:
-    p = shutil.which("ffmpeg")
-    if not p:
-        raise RuntimeError("ffmpeg bulunamadı. Kur: winget install Gyan.FFmpeg")
-    return p
+def tool_path(name: str, tool_dir: str = "") -> str | None:
+    """Önce config'teki klasöre, sonra PATH'e bakar."""
+    if tool_dir and (p := Path(tool_dir) / f"{name}.exe").is_file():
+        return str(p)
+    return shutil.which(name)
 
 
-def video_duration(video: str) -> float | None:
-    probe = shutil.which("ffprobe")
+def video_duration(video: str, tool_dir: str = "") -> float | None:
+    probe = tool_path("ffprobe", tool_dir)
     if not probe:
         return None
     out = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration",
@@ -63,9 +63,12 @@ def video_duration(video: str) -> float | None:
         return None
 
 
-def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool) -> list[Path]:
+def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool,
+        tool_dir: str = "") -> list[Path]:
+    ff = tool_path("ffmpeg", tool_dir)
+    if not ff:
+        raise RuntimeError("ffmpeg bulunamadı. config.toml'da clips.ffmpeg_dir'i ayarla.")
     out_dir.mkdir(parents=True, exist_ok=True)
-    ff = ffmpeg_path()
     paths = []
     for c in clips:
         dst = out_dir / f"{c.name}.mp4"
