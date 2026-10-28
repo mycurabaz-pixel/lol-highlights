@@ -63,19 +63,38 @@ def video_duration(video: str, tool_dir: str = "") -> float | None:
         return None
 
 
+ENCODERS = {
+    # NVIDIA kartta GPU ile hızlı; yoksa işlemci
+    "h264_nvenc": ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "21", "-b:v", "0"],
+    "libx264": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"],
+}
+
+
 def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool,
         tool_dir: str = "") -> list[Path]:
+    """reencode=True: kesim tam saniyesinde olur. False (copy): hızlıdır ama başlangıç
+    önceki anahtar kareye (birkaç saniye geriye) kayar ve olay klibin dışında kalabilir."""
     ff = tool_path("ffmpeg", tool_dir)
     if not ff:
         raise RuntimeError("ffmpeg bulunamadı. config.toml'da clips.ffmpeg_dir'i ayarla.")
     out_dir.mkdir(parents=True, exist_ok=True)
+    order = ["h264_nvenc", "libx264"]
     paths = []
     for c in clips:
         dst = out_dir / f"{c.name}.mp4"
-        codec = (["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac"]
-                 if reencode else ["-c", "copy", "-avoid_negative_ts", "make_zero"])
-        cmd = [ff, "-y", "-loglevel", "error", "-ss", f"{c.start:.3f}", "-i", video,
-               "-t", f"{c.end - c.start:.3f}", *codec, str(dst)]
-        subprocess.run(cmd, check=True)
+        base = [ff, "-y", "-loglevel", "error", "-ss", f"{c.start:.3f}", "-i", video,
+                "-t", f"{c.end - c.start:.3f}"]
+        if not reencode:
+            subprocess.run([*base, "-c", "copy", "-avoid_negative_ts", "make_zero", str(dst)],
+                           check=True)
+        else:
+            for enc in list(order):
+                r = subprocess.run([*base, *ENCODERS[enc], "-c:a", "aac", "-b:a", "160k",
+                                    "-movflags", "+faststart", str(dst)], capture_output=True)
+                if r.returncode == 0:
+                    break
+                order.remove(enc)  # bu kodlayıcı yok/çalışmıyor; sonrakini dene
+            else:
+                raise RuntimeError(f"Klip kesilemedi: {r.stderr.decode(errors='replace')[-300:]}")
         paths.append(dst)
     return paths

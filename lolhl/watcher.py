@@ -115,22 +115,30 @@ class Watcher:
             rec.start()
             self._set("recording", f"Maç başladı (gameId={game_id}), kayıt açık.")
 
-            # video_zamanı - oyun_zamanı farkını birkaç örnekle ölç
-            offsets: list[float] = []
+            # video_zamanı - oyun_zamanı farkını maç boyunca ölç. Yükleme ekranı
+            # sırasında Live Client'ın saati oyun saatiyle uyuşmayabiliyor (bir maçta
+            # 63 sn sapma görüldü), bu yüzden oyun saati 90 sn'yi geçtikten sonraki
+            # örnekler esas alınır.
+            samples: list[tuple[float, float]] = []
             while lcu.phase() == "InProgress" and not self._stop.is_set():
                 gt = live_game_time()
-                if gt is not None and gt > 0 and len(offsets) < 10:
-                    offsets.append(rec.elapsed() - gt)
-                self._stop.wait(3)
+                if gt is not None and gt > 0:
+                    samples.append((gt, rec.elapsed() - gt))
+                self._stop.wait(5)
 
             video = rec.stop()
-            if not offsets:
+            if not samples:
                 self._set("waiting", "Oyun saati okunamadı (remake/erken çıkış?), atlanıyor.")
                 continue
-            offset = statistics.median(offsets)
+            settled = [o for gt, o in samples if gt >= 90] or [o for _, o in samples]
+            offset = statistics.median(settled)
+            spread = max(settled) - min(settled)
+            if spread > 3:
+                self.log(f"Uyarı: saat farkı ölçümleri {spread:.1f} sn oynadı; klipler kayabilir.")
             sidecar = Path(video).with_suffix(".json")
             sidecar.write_text(json.dumps({"match_id": self.api.match_id_from_game_id(game_id),
-                                           "offset": offset, "video": video}))
+                                           "offset": offset, "video": video,
+                                           "samples": samples[:: max(1, len(samples) // 60)]}))
             if self._stop.is_set():
                 # maç ortasında durdurulduysa sonraki açılışta işlenir
                 self.log("Kayıt kaydedildi; klipler bir sonraki başlatmada çıkarılacak.")

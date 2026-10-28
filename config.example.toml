@@ -21,7 +21,7 @@ password = ""
 output_dir = "clips"
 ffmpeg_dir = "D:/Tools/ffmpeg/ffmpeg-9.0.2-full_build/bin"   # boşsa PATH'e bakılır
 merge_gap = 3.0                 # aradaki boşluk bu kadar saniyeden azsa klipleri birleştir
-reencode = false                # false: hızlı ama kesim keyframe'e yuvarlanır
+reencode = true                 # true: tam saniyesinde keser (önerilen). false: hızlı ama birkaç sn kayabilir
 
 [rules]
 # Mevcut: my_kills, my_deaths, my_assists
