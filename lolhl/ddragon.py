@@ -63,6 +63,10 @@ SHARDS = {5008: "Adaptive Force", 5005: "Attack Speed", 5007: "Ability Haste", 5
           5010: "Move Speed", 5011: "Health", 5013: "Tenacity and Slow Resist", 5002: "Armor", 5003: "Magic Resist"}
 
 
+def is_trinket(item_id: int) -> bool:
+    return "Trinket" in items().get(item_id, {}).get("tags", [])
+
+
 def item_kind(item_id: int) -> str | None:
     """'boots', 'legendary' ya da None (bileşen, iksir, totem...)."""
     it = items().get(item_id)

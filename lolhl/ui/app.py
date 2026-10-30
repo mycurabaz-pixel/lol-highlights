@@ -480,6 +480,10 @@ class Api:
         for key in ("core", "boots", "situational"):
             for it in s[key]:
                 it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
+        for key in ("start", "order"):
+            for g in s[key]:
+                for it in g["items"]:
+                    it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
         c = ddragon.champions().get(int(champion_id), {})
         return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
                 "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
@@ -530,7 +534,10 @@ class Api:
             raise RuntimeError("LoL client is not open")
         path = f"/lol-item-sets/v1/item-sets/{me['summonerId']}/sets"
         data = self._lcu.get(path) or {"accountId": me.get("accountId"), "itemSets": []}
-        blk = lambda name, its: {"type": name, "items": [{"id": str(i["id"]), "count": 1} for i in its]}  # noqa: E731
+        blk = lambda name, its: {"type": name, "items": [{"id": str(i["id"]), "count": i.get("count", 1)} for i in its]}  # noqa: E731
+        # timeline verisi varsa: en sık başlangıç seti ve en sık item sırası; yoksa en çok yapılanlar
+        start = [blk("Starting items", s["start"][0]["items"])] if s["start"] else []
+        core = blk("Build order", s["order"][0]["items"]) if s["order"] else             blk(f"Core ({s['games']} high-elo games)", s["core"])
         # aynı şampiyon için önceki setimizi değiştir, diğer setlere dokunma
         data["itemSets"] = [x for x in data.get("itemSets", []) if not x.get("title", "").startswith(PREFIX)
                             or int(champion_id) not in x.get("associatedChampions", [])]
@@ -538,8 +545,7 @@ class Api:
             "title": self._title(s), "type": "custom", "map": "any", "mode": "any", "uid": str(uuid.uuid4()),
             "associatedChampions": [int(champion_id)], "associatedMaps": [11], "sortrank": 0,
             "startedFrom": "blank", "preferredItemSlots": [],
-            "blocks": [blk(f"Core ({s['games']} high-elo games)", s["core"]), blk("Boots", s["boots"]),
-                       blk("Situational", s["situational"])],
+            "blocks": [*start, core, blk("Boots", s["boots"]), blk("Situational", s["situational"])],
         })
         r = self._lcu.call("PUT", path, data)
         if r is None or not r.ok:

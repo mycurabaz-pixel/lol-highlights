@@ -47,7 +47,8 @@ const Live = (() => {
     el("lv-phase").textContent = label;
     el("lv-phase").className = `state-pill ${cls}`;
     const st = s.stats;
-    el("lv-stats").textContent = `Stats: ${st.matches} high-elo matches${st.patch ? ` (${st.patch_matches} on patch ${st.patch})` : ""} · ${COLLECTOR[st.collector] || st.collector}`;
+    const regions = Object.entries(st.regions || {}).map(([r, n]) => `${r} ${n}`).join(" · ");
+    el("lv-stats").textContent = `Stats: ${st.matches} high-elo matches${regions ? ` (${regions})` : ""}${st.patch ? `, ${st.patch_matches} on patch ${st.patch}` : ""} · ${COLLECTOR[st.collector] || st.collector}`;
     // şampiyon seçimindeki seçimi otomatik göster (kullanıcı elle başka şampiyon seçmediyse)
     if (s.pick) {
       const k = `${s.pick.champion_id}|${s.pick.role}`;
@@ -109,9 +110,18 @@ const Live = (() => {
       ${list.map((it) => `<div class="lv-item" title="${esc(it.name)} · ${it.games} games">
         <img src="${itemImg(it.id)}" alt=""><span>${pct(it.pick)}</span><span class="muted">${pct(it.wr)}</span></div>`).join("")}
       </div></div>` : "";
+    // timeline'dan gelen gruplar: başlangıç seti (adetli) ve item sırası (oklarla)
+    const groups = (title, list, arrows) => list.length ? `<div class="lv-items"><h3>${title}</h3>
+      ${list.map((g, i) => `<div class="lv-group ${i ? "" : "top"}"><div class="lv-group-items">
+        ${g.items.map((it) => `<span class="lv-gi" title="${esc(it.name)}"><img src="${itemImg(it.id)}" alt="">${it.count > 1 ? `<b>${it.count}</b>` : ""}</span>`)
+          .join(arrows ? `<span class="lv-arrow">›</span>` : "")}</div>
+        <div class="lv-num"><b>${pct(g.pick)}</b><span class="muted small">pick</span></div>
+        <div class="lv-num"><b>${pct(g.wr)}</b><span class="muted small">win · ${g.games}</span></div></div>`).join("")}</div>` : "";
+    const timedNote = s.timed ? "" : `<div class="muted small lv-note">Starting items and build order appear once matches with purchase history are collected.</div>`;
     el("lv-suggest").innerHTML = head + `<div class="lv-grid"><div><h3 class="lv-h">Rune pages <span class="muted small">click one to choose what Import runes copies</span></h3>${pages}</div>
       <div><h3 class="lv-h">Items <span class="muted small">pick rate / win rate</span></h3>
-      ${items("Core", s.core)}${items("Boots", s.boots)}${items("Situational", s.situational)}</div></div>`;
+      ${groups("Starting items", s.start, false)}${groups("Build order (first 3 items)", s.order, true)}${timedNote}
+      ${items(s.order.length ? "Most built" : "Core", s.core)}${items("Boots", s.boots)}${items("Situational", s.situational)}</div></div>`;
   }
 
   async function doImport(kind) {

@@ -406,3 +406,14 @@ b.bad { color: var(--death); }
 .lv-page { cursor: pointer; }
 .lv-page:hover { border-color: var(--muted); }
 .lv-page.best:hover { border-color: var(--accent); }
+.lv-group {
+  display: grid; grid-template-columns: 1fr 54px 70px; align-items: center; gap: 12px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; background: var(--bg);
+}
+.lv-group.top { border-color: var(--accent); }
+.lv-group-items { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.lv-gi { position: relative; display: inline-flex; }
+.lv-gi img { width: 32px; height: 32px; border-radius: 5px; border: 1px solid var(--line); }
+.lv-gi b { position: absolute; right: -3px; bottom: -3px; font-size: 10.5px; background: var(--panel-2); border-radius: 4px; padding: 0 3px; }
+.lv-arrow { color: var(--muted); font-size: 16px; margin: 0 2px; }
+.lv-note { margin: -4px 0 12px; }

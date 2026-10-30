@@ -23,7 +23,8 @@ class KeyExpired(RuntimeError):
 
 
 class _Limiter:
-    """Geliştirici anahtarı sınırı: 20 istek/sn, 100 istek/2 dk. Aynı anahtarı kullanan
+    """Geliştirici anahtarı sınırı: 20 istek/sn, 100 istek/2 dk — Riot bunu her sunucu
+    (tr1, euw1, kr, europe, asia...) için ayrı sayar. Aynı anahtarla aynı sunucuya giden
     herkes (watcher, analiz, oyuncu bilgisi, istatistik toplayıcı) aynı sayacı paylaşır.
     Arka plan işleri `reserve` kadar payı ön plana bırakır."""
     WINDOWS = ((1.0, 18), (120.0, 92))
@@ -50,7 +51,13 @@ class _Limiter:
             time.sleep(min(wait, 5) + 0.05)
 
 
-_limiters: dict[str, _Limiter] = {}
+_limiters: dict[tuple[str, str], _Limiter] = {}
+_limiters_lock = threading.Lock()
+
+
+def _limiter(api_key: str, host: str) -> _Limiter:
+    with _limiters_lock:
+        return _limiters.setdefault((api_key, host), _Limiter())
 
 
 class RiotApi:
@@ -62,13 +69,14 @@ class RiotApi:
         self.pbase = f"https://{self.platform.lower()}.api.riotgames.com"  # League, Mastery
         self.s = requests.Session()
         self.s.headers["X-Riot-Token"] = api_key
-        self.limit = _limiters.setdefault(api_key, _Limiter())
+        self.key = api_key
         self.reserve = reserve
 
     def _get(self, path: str, retries: int = 5, platform: bool = False):
         for _ in range(retries):
-            self.limit.acquire(self.reserve)
-            r = self.s.get((self.pbase if platform else self.base) + path, timeout=15)
+            base = self.pbase if platform else self.base
+            _limiter(self.key, base).acquire(self.reserve)
+            r = self.s.get(base + path, timeout=15)
             if r.status_code in (401, 403):
                 raise KeyExpired("Riot API key is invalid or expired; renew it in Settings.")
             if r.status_code == 429:
@@ -114,6 +122,9 @@ class RiotApi:
 
     def match(self, match_id: str) -> dict | None:
         return self._get(f"/lol/match/v5/matches/{match_id}")
+
+    def timeline(self, match_id: str) -> dict | None:
+        return self._get(f"/lol/match/v5/matches/{match_id}/timeline")
 
     def match_ids(self, puuid: str, count: int = 20, queue: int | None = 420, kind: str = "",
                   start: int = 0, since: int | None = None) -> list[str]:

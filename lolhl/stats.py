@@ -18,13 +18,22 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import ddragon
-from .riot_api import KeyExpired, RiotApi
+from .riot_api import REGIONAL, KeyExpired, RiotApi
 
 DB = Path(__file__).resolve().parents[1] / "stats.db"
+# Toplanan bölgeler. Match-V5 istekleri bölgesel kümeye gider (TR ve EUW ikisi de "europe"),
+# Riot'un sınırı küme başına ayrı olduğu için her küme kendi iş parçacığında toplanır.
+CLUSTERS = {"europe": ("TR1", "EUW1"), "asia": ("KR",)}
+REGION_NAMES = {"TR1": "TR", "EUW1": "EUW", "KR": "KR"}
+START_WINDOW = 60_000  # ilk 60 sn'de alınanlar başlangıç itemi sayılır (ms)
 ROLES = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
 SCOUTING = threading.Event()  # oyuncu bilgisi yüklenirken toplayıcı bekler
 MIN_GAMES = 8        # bu kadar maçtan azsa öneri "az veri" uyarısıyla gösterilir
 _lock = threading.Lock()
+
+
+def _cluster_of(platform: str) -> str:
+    return REGIONAL[platform.upper()]
 
 
 def _db() -> sqlite3.Connection:
@@ -39,6 +48,11 @@ def _db() -> sqlite3.Connection:
     # source: 'apex' = toplayıcının Master+ maçları (öneriler bunlardan), 'scout' = oyuncu bilgisi için çekilenler
     if "source" not in [r[1] for r in c.execute("PRAGMA table_info(matches)")]:
         c.execute("ALTER TABLE matches ADD COLUMN source TEXT")
+    # timeline'dan: başlangıç itemleri ve satın alma sırası (timeline'ı olmayan eski maçlarda boş)
+    cols = [r[1] for r in c.execute("PRAGMA table_info(parts)")]
+    for col, kind in (("start", "TEXT"), ("build", "TEXT"), ("bound", "INT")):
+        if col not in cols:
+            c.execute(f"ALTER TABLE parts ADD COLUMN {col} {kind}")
     return c
 
 
@@ -57,26 +71,51 @@ def _runes(p: dict) -> dict | None:
             "shards": [sp.get("offense"), sp.get("flex"), sp.get("defense")]}
 
 
-def store(info: dict, source: str = "apex") -> None:
-    """Match-V5 maç detayını veritabanına ekler (zaten varsa dokunmaz)."""
+def purchases(timeline: dict) -> dict[int, tuple[list[int], list[int]]]:
+    """participantId -> (başlangıç itemleri, sırayla alınan bütün itemler). Geri alınan
+    (undo) alışverişler çıkarılır."""
+    events = sorted((e for f in timeline["info"]["frames"] for e in f["events"]
+                     if e["type"] in ("ITEM_PURCHASED", "ITEM_UNDO")), key=lambda e: e["timestamp"])
+    bought: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for e in events:
+        pid = e.get("participantId")
+        if e["type"] == "ITEM_PURCHASED":
+            bought[pid].append((e["timestamp"], e["itemId"]))
+        elif e.get("beforeId"):  # alışverişi geri al: o itemin son alımını sil
+            seq = bought[pid]
+            for i in range(len(seq) - 1, -1, -1):
+                if seq[i][1] == e["beforeId"]:
+                    del seq[i]
+                    break
+    return {pid: ([it for t, it in seq if t <= START_WINDOW], [it for _, it in seq]) for pid, seq in bought.items()}
+
+
+def store(info: dict, source: str = "apex", timeline: dict | None = None) -> None:
+    """Match-V5 maç detayını (ve varsa timeline'ını) veritabanına ekler (zaten varsa dokunmaz)."""
     i = info["info"]
     if i.get("gameDuration", 0) < 600:  # remake / erken teslim
         return
     mid = info["metadata"]["matchId"]
     parts = i["participants"]
     by_role = {(p["teamId"], p.get("teamPosition")): p["championId"] for p in parts}
+    buys = purchases(timeline) if timeline else {}
     rows = []
     for p in parts:
         role = p.get("teamPosition") or ""
+        start, build = buys.get(p["participantId"], (None, None))
         rows.append((mid, p["puuid"], p["championId"], role, int(p["win"]), json.dumps(_runes(p)),
                      json.dumps([p.get(f"item{k}", 0) for k in range(6) if p.get(f"item{k}")]),
-                     by_role.get((300 - p["teamId"], role))))
+                     by_role.get((300 - p["teamId"], role)),
+                     json.dumps(start) if start is not None else None, json.dumps(build) if build is not None else None,
+                     # rol görevi yuvası: ADC'nin botu 6 item yuvasında değil burada durur
+                     p.get("roleBoundItem") or 0))
     with _lock, _db() as c:
         if c.execute("SELECT 1 FROM matches WHERE id=?", (mid,)).fetchone():
             return
         c.execute("INSERT INTO matches (id, patch, queue, created, source) VALUES (?,?,?,?,?)",
                   (mid, patch_of(i.get("gameVersion", "")), i.get("queueId"), i.get("gameCreation", 0) / 1000, source))
-        c.executemany("INSERT INTO parts VALUES (?,?,?,?,?,?,?,?)", rows)
+        c.executemany("INSERT INTO parts (match_id, puuid, champion, role, win, runes, items, opponent, start, build, bound) "
+                      "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
 
 
 def known(match_ids: list[str]) -> set[str]:
@@ -90,10 +129,13 @@ def known(match_ids: list[str]) -> set[str]:
 def summary() -> dict:
     with _db() as c:
         rows = c.execute("SELECT patch, COUNT(*) FROM matches WHERE queue=420 AND source='apex' GROUP BY patch").fetchall()
+        regions = c.execute("SELECT substr(id, 1, instr(id, '_') - 1) r, COUNT(*) FROM matches "
+                            "WHERE queue=420 AND source='apex' GROUP BY r").fetchall()
     if not rows:
-        return {"matches": 0, "patch": None}
+        return {"matches": 0, "patch": None, "regions": {}}
     patch = max(rows, key=lambda r: [int(x) for x in r[0].split(".") if x.isdigit()])
-    return {"matches": sum(n for _, n in rows), "patch": patch[0], "patch_matches": patch[1]}
+    return {"matches": sum(n for _, n in rows), "patch": patch[0], "patch_matches": patch[1],
+            "regions": {REGION_NAMES.get(r, r): n for r, n in regions}}
 
 
 def player_champion(puuid: str, champion: int, match_ids: list[str]) -> dict:
@@ -132,7 +174,7 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
     cur = summary().get("patch")
     with _db() as c:
         def rows(patch_only: bool, vs: int | None = None):
-            sql = ("SELECT p.win, p.runes, p.items FROM parts p JOIN matches m ON m.id=p.match_id "
+            sql = ("SELECT p.win, p.runes, p.items, p.start, p.build, p.bound, p.role FROM parts p JOIN matches m ON m.id=p.match_id "
                    "WHERE m.queue=420 AND m.source='apex' AND p.champion=?")
             args: list = [champion]
             if role:
@@ -152,22 +194,49 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
     wr = lambda w, n: round(100 * w / n, 1) if n else None  # noqa: E731
 
     pages = defaultdict(lambda: [0, 0])
-    for win, r, _ in data:
+    for win, r, *_ in data:
         if r and r != "null":
             pages[r][0] += 1
             pages[r][1] += win
     top_pages = sorted(pages.items(), key=lambda kv: kv[1][0], reverse=True)[:3]
 
     legend, boots = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0])
-    for win, _, items in data:
-        for it in set(json.loads(items)):
+    boot_games = 0
+    for win, _, items, _, _, bound, row_role in data:
+        # rol yuvası kaydedilmeden toplanan ADC maçlarında bot bilinmiyor; bot hesabına girmez
+        known_boots = row_role != "BOTTOM" or bound is not None
+        boot_games += known_boots
+        for it in set(json.loads(items)) | ({bound} if bound else set()):
             kind = ddragon.item_kind(it)
             if kind:
+                if kind == "boots" and not known_boots:
+                    continue
                 bucket = legend if kind == "legendary" else boots
                 bucket[it][0] += 1
                 bucket[it][1] += win
     rank = lambda d: sorted(d.items(), key=lambda kv: kv[1][0], reverse=True)  # noqa: E731
     item = lambda kv: {"id": kv[0], "games": kv[1][0], "pick": wr(kv[1][0], games), "wr": wr(kv[1][1], kv[1][0])}  # noqa: E731
+
+    # timeline'ı olan maçlardan: başlangıç seti ve ilk 3 bitmiş itemin alınma sırası
+    timed = [(win, json.loads(st), json.loads(bd)) for win, _, _, st, bd, *_ in data if st is not None and bd]
+    starts, orders = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0])
+    for win, st, bd in timed:
+        st = [i for i in st if not ddragon.is_trinket(i)]  # totem herkese bedava, seti bölmesin
+        if st:
+            k = tuple(sorted(st))
+            starts[k][0] += 1
+            starts[k][1] += win
+        seen: list[int] = []
+        for it in bd:
+            if ddragon.item_kind(it) == "legendary" and it not in seen:
+                seen.append(it)
+        if len(seen) >= 3:
+            orders[tuple(seen[:3])][0] += 1
+            orders[tuple(seen[:3])][1] += win
+    n_starts = sum(v[0] for v in starts.values())
+    n_orders = sum(v[0] for v in orders.values())
+    group = lambda kv, n: {"items": [{"id": i, "count": kv[0].count(i)} for i in dict.fromkeys(kv[0])],  # noqa: E731
+                           "games": kv[1][0], "pick": wr(kv[1][0], n), "wr": wr(kv[1][1], kv[1][0])}
 
     return {
         "champion": champion, "role": role, "games": games, "scope": scope,
@@ -175,70 +244,95 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
         "vs": {"champion": opponent, "games": len(vs), "wr": wr(sum(d[0] for d in vs), len(vs))} if opponent else None,
         "runes": [{**json.loads(k), "games": v[0], "pick": wr(v[0], games), "wr": wr(v[1], v[0])}
                   for k, v in top_pages],
+        "timed": len(timed),
+        "start": [group(kv, n_starts) for kv in rank(starts)[:2]],
+        "order": [group(kv, n_orders) for kv in rank(orders)[:3]],
         "core": [item(kv) for kv in rank(legend)[:3]],
-        "boots": [item(kv) for kv in rank(boots)[:2]],
+        "boots": [{**item(kv), "pick": wr(kv[1][0], boot_games)} for kv in rank(boots)[:2]],
         "situational": [item(kv) for kv in rank(legend)[3:9]],
     }
 
 
 class Collector:
-    """Arka planda Master+ maçlarını toplar. Anahtar geçersizse bekler, uygulama kapanınca durur."""
+    """Arka planda Master+ maçlarını (timeline'larıyla) toplar: her bölgesel küme (europe:
+    TR+EUW, asia: KR) kendi iş parçacığında, kendi istek sınırıyla. Anahtar geçersizse bekler,
+    uygulama kapanınca durur. Oyuncu bilgisi yüklenirken aynı kümedeki toplayıcı bekler."""
 
     def __init__(self, cfg: dict, log):
         self.cfg, self.log = cfg, log
-        self.state = "idle"
+        self.states = {c: "idle" for c in CLUSTERS}
         self.added = 0
         self._stop = threading.Event()
-        self._wake = threading.Event()
+        self._cond = threading.Condition()
+
+    @property
+    def state(self) -> str:
+        st = list(self.states.values())
+        if "collecting" in st:
+            return "collecting"
+        return next((x for x in st if x != "idle"), "idle")
 
     def stop(self) -> None:
         self._stop.set()
-        self._wake.set()
+        with self._cond:
+            self._cond.notify_all()
 
     def update(self, cfg: dict) -> None:
         """Ayarlar (ör. yeni API anahtarı) kaydedilince beklemeden devam et."""
         self.cfg = cfg
-        self._wake.set()
+        with self._cond:
+            self._cond.notify_all()
 
     def _wait(self, seconds: float) -> None:
-        self._wake.wait(seconds)
-        self._wake.clear()
+        with self._cond:
+            self._cond.wait(seconds)
 
     def run(self) -> None:
-        players: list[str] = []
+        workers = [threading.Thread(target=self._work, args=(c,), daemon=True) for c in CLUSTERS]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+
+    def _work(self, cluster: str) -> None:
+        platforms = CLUSTERS[cluster]
+        players: list[tuple[str, str]] = []  # (platform, puuid)
         refreshed = 0.0
         while not self._stop.is_set():
             try:
-                r = self.cfg["riot"]
-                api = RiotApi(r["api_key"], r["platform"], reserve=35)  # 35 isteği ön plana bırak
+                key = self.cfg["riot"]["api_key"]
+                home = _cluster_of(self.cfg["riot"]["platform"])
                 if time.time() - refreshed > 3600 or not players:
-                    players = api.apex_puuids()
+                    players = [(pf, pu) for pf in platforms for pu in RiotApi(key, pf, reserve=35).apex_puuids()]
                     random.shuffle(players)
                     refreshed = time.time()
                     if not players:
-                        self.state = "no players"
+                        self.states[cluster] = "no players"
                         self._wait(600)
                         continue
-                if SCOUTING.is_set():
-                    self.state = "paused for player info"
+                if SCOUTING.is_set() and cluster == home:
+                    self.states[cluster] = "paused for player info"
                     self._wait(5)
                     continue
-                self.state = "collecting"
-                puuid = players.pop()
+                self.states[cluster] = "collecting"
+                platform, puuid = players.pop()
+                api = RiotApi(key, platform, reserve=35)  # 35 isteği ön plana bırak
                 ids = api.match_ids(puuid, count=10)
                 for mid in [m for m in ids if m not in known(ids)]:
                     if self._stop.is_set():
                         return
-                    if SCOUTING.is_set():
+                    if SCOUTING.is_set() and cluster == home:
                         break
                     if (info := api.match(mid)):
-                        store(info)
+                        store(info, "apex", api.timeline(mid))
                         self.added += 1
-                        if self.added % 100 == 0:
-                            self.log(f"Stats: {summary()['matches']} high-elo matches collected")
+                        if self.added % 200 == 0:
+                            sm = summary()
+                            self.log(f"Stats: {sm['matches']} high-elo matches collected "
+                                     f"({', '.join(f'{k} {v}' for k, v in sm['regions'].items())})")
             except KeyExpired:
-                self.state = "key expired"
+                self.states[cluster] = "key expired"
                 self._wait(600)
             except Exception as e:  # ağ hatası vb.; toplayıcı ölmesin
-                self.state = f"error: {e}"
+                self.states[cluster] = f"error: {e}"
                 self._wait(60)
