@@ -126,39 +126,63 @@ const Live = (() => {
   }
 
   // ---------- oyuncular ----------
+  // Solo/Duo ↔ Flex: lig, LP, kazanma oranı ve şampiyon istatistiği seçilen kuyruktan
+  let queue = "solo";
+  try { queue = localStorage.getItem("lv-queue") || "solo"; } catch {}
+  let lastScout = null;
+  const QNAME = { solo: "Solo/Duo", flex: "Flex" };
+
   function renderScout(sc) {
+    lastScout = sc;
+    document.querySelectorAll("#lv-queue .chip").forEach((b) => b.classList.toggle("on", b.dataset.q === queue));
     if (!sc) {
       el("lv-scout").innerHTML = `<div class="r-empty">No game in progress.</div>`;
       el("lv-scout-note").textContent = "Fills in when the loading screen starts.";
       return;
     }
     el("lv-scout-note").textContent = sc.status === "error" ? sc.error
-      : `${sc.source === "preview" ? "Your last match (preview)" : "Current game"}${sc.status === "done" ? "" : " · loading..."}`;
+      : `${sc.source === "preview" ? "Your last match (preview)" : "Current game"}${sc.status === "done" ? ""
+        : sc.status === "season games" ? " · counting this season's games..." : " · loading..."}`;
     const rank = (r) => r ? `<b>${TIERS[r.tier] || r.tier}${["MASTER", "GRANDMASTER", "CHALLENGER"].includes(r.tier) ? "" : " " + r.rank}</b>
       <span class="muted">${r.lp} LP</span>` : `<span class="muted">Unranked</span>`;
     const wr = (r) => r ? `<b class="${wrOf(r.wins, r.losses) >= 50 ? "good" : "bad"}">${wrOf(r.wins, r.losses)}%</b>
       <span class="muted">${r.wins}W ${r.losses}L</span>` : `<span class="muted">—</span>`;
-    const onChamp = (c) => !c ? `<span class="muted">...</span>` : !c.games ? `<span class="muted">0 of last ${c.of}</span>`
-      : `<b class="${c.wins * 2 >= c.games ? "good" : "bad"}">${Math.round((100 * c.wins) / c.games)}%</b>
-        <span class="muted">${c.wins}W ${c.games - c.wins}L of last ${c.of}</span>`;
+    // bu sezon o şampiyonla; tüm maçlar henüz incelenmediyse kaçının incelendiği yazar
+    const onChamp = (p) => {
+      const c = p.champ?.[queue];
+      const total = p.season?.[queue];
+      if (!c || total == null) return `<span class="muted">...</span>`;
+      const progress = c.of < total ? ` · ${c.of}/${total} checked` : "";
+      if (!c.games) return `<span class="muted">No games${c.of < total ? "" : " this season"}${progress}</span>`;
+      return `<b class="${c.wins * 2 >= c.games ? "good" : "bad"}">${Math.round((100 * c.wins) / c.games)}%</b>
+        <span class="muted">${c.wins}W ${c.games - c.wins}L${progress}</span>`;
+    };
     const mastery = (m) => !m ? `<span class="muted">...</span>`
       : `<b>${m.level ? "M" + m.level : "—"}</b> <span class="muted">${m.points >= 1000 ? Math.round(m.points / 1000) + "k" : m.points} pts</span>`;
+    const loaded = (p) => p.solo !== null || p.flex !== null || p.mastery;
     const team = (id, label) => {
       const ps = sc.players.filter((p) => p.team === id);
       return `<div class="lv-team ${id === 100 ? "blue" : "red"}"><div class="lv-row lv-th">
-        <span>${label}</span><span>Solo/Duo</span><span>Win rate</span><span>On this champion (Solo+Flex)</span><span>Mastery</span></div>
+        <span>${label}</span><span>${QNAME[queue]}</span><span>Win rate</span><span>On this champion (${QNAME[queue]}, this season)</span><span>Mastery</span></div>
         ${ps.map((p) => `<div class="lv-row ${p.me ? "me" : ""}">
           <span class="lv-who"><img src="${champImg(p.champion)}" alt="">
             <span><b>${esc(p.name || "?")}${p.me ? ` <span class="you">You</span>` : ""}</b>
             <span class="muted small">${esc(p.champion_name)}${p.role ? " · " + (ROLES[p.role] || p.role) : ""}</span></span></span>
-          <span>${p.solo === null && !p.mastery ? `<span class="muted">...</span>` : rank(p.solo)}</span>
-          <span>${p.solo === null && !p.mastery ? "" : wr(p.solo)}</span>
-          <span>${onChamp(p.champ)}</span>
+          <span>${loaded(p) ? rank(p[queue]) : `<span class="muted">...</span>`}</span>
+          <span>${loaded(p) ? wr(p[queue]) : ""}</span>
+          <span>${onChamp(p)}</span>
           <span>${mastery(p.mastery)}</span></div>`).join("")}</div>`;
     };
     el("lv-scout").innerHTML = team(100, "Blue team") + team(200, "Red team");
   }
 
+  el("lv-queue").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-q]");
+    if (!b) return;
+    queue = b.dataset.q;
+    try { localStorage.setItem("lv-queue", queue); } catch {}
+    renderScout(lastScout);
+  });
   el("lv-champ").addEventListener("change", load);
   el("lv-role").addEventListener("change", load);
   el("lv-imp-runes").onclick = () => doImport("runes");

@@ -115,9 +115,20 @@ class RiotApi:
     def match(self, match_id: str) -> dict | None:
         return self._get(f"/lol/match/v5/matches/{match_id}")
 
-    def match_ids(self, puuid: str, count: int = 20, queue: int | None = 420, kind: str = "") -> list[str]:
-        q = (f"&queue={queue}" if queue else "") + (f"&type={kind}" if kind else "")
+    def match_ids(self, puuid: str, count: int = 20, queue: int | None = 420, kind: str = "",
+                  start: int = 0, since: int | None = None) -> list[str]:
+        q = (f"&queue={queue}" if queue else "") + (f"&type={kind}" if kind else "") + \
+            (f"&start={start}" if start else "") + (f"&startTime={since}" if since else "")
         return self._get(f"/lol/match/v5/matches/by-puuid/{puuid}/ids?count={count}{q}") or []
+
+    def season_ids(self, puuid: str, queue: int, since: int) -> list[str]:
+        """Bir kuyruktaki `since`'ten bu yana bütün maç kimlikleri (yeniden eskiye)."""
+        out: list[str] = []
+        while True:
+            page = self.match_ids(puuid, 100, queue=queue, start=len(out), since=since)
+            out += page
+            if len(page) < 100:
+                return out
 
     def account(self, game_name: str, tag_line: str) -> dict | None:
         return self._get(f"/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}")

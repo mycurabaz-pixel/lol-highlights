@@ -1,5 +1,9 @@
-"""Oyun yüklenirken 10 oyuncunun lig, LP, kazanma oranı, şampiyon ustalığı ve son dereceli
-maçlarında o şampiyonla kazanma oranı.
+"""Oyun yüklenirken 10 oyuncunun lig, LP, kazanma oranı, şampiyon ustalığı ve bu sezonki
+dereceli maçlarında (Solo/Duo ve Flex ayrı) o şampiyonla kazanma oranı.
+
+Riot şampiyon başına sezon istatistiği vermiyor; sezonun maçları Match-V5'ten tek tek
+çekilip sayılır (yeniden eskiye, oyuncular arasında sırayla). Çekilen maçlar stats.db'de
+kalır, aynı oyuncu bir daha gelince anında hazırdır.
 
 Oyuncu listesi oyun başladıktan sonra (isimler herkese açıkken) LCU gameflow oturumundan,
 o olmazsa Live Client Data API'den alınır; geri kalanı Riot web API'si. Şampiyon seçiminde
@@ -8,6 +12,7 @@ gizli olan isimlere bakılmaz. Oyuna dokunmaz, overlay yoktur; bilgi uygulama pe
 from __future__ import annotations
 
 import threading
+import time
 
 import requests
 
@@ -15,7 +20,8 @@ from . import ddragon, stats
 from .lcu import Lcu
 from .riot_api import KeyExpired, RiotApi
 
-RECENT = 20  # şampiyon kazanma oranı için bakılan son dereceli (Solo/Duo + Flex) maç sayısı
+SEASON_START = int(time.mktime((time.localtime().tm_year, 1, 1, 0, 0, 0, 0, 0, -1)))  # sezon ocakta başlar
+QUEUES = {"solo": 420, "flex": 440}
 
 
 def _champ_by_name(name: str) -> int | None:
@@ -73,7 +79,7 @@ class Scout:
         for p in players:
             c = champs.get(p["champion_id"]) or {}
             p.update(champion=c.get("id", ""), champion_name=c.get("name", ""),
-                     solo=None, flex=None, mastery=None, champ=None)
+                     solo=None, flex=None, mastery=None, champ=None, season=None)
         self.players = players
         self.status = "loading"
         self.error = ""
@@ -83,6 +89,7 @@ class Scout:
 
     def stop(self) -> None:
         self._stop.set()
+        stats.SCOUTING.clear()
 
     def snapshot(self) -> dict:
         return {"source": self.source, "status": self.status, "error": self.error, "players": self.players}
@@ -103,21 +110,36 @@ class Scout:
                     {"level": 0, "points": 0}
                 if self._stop.is_set():
                     return
-            # sonra son dereceli maçlar; oyuncular arasında sırayla, herkes eşit dolsun
-            self.status = "recent games"
-            ids = {p["puuid"]: self.api.match_ids(p["puuid"], RECENT, queue=None, kind="ranked") for p in self.players}
-            todo = {k: [m for m in v if m not in stats.known(v)] for k, v in ids.items()}
+            # sonra bu sezonun bütün dereceli maçları; oyuncular arasında sırayla, yeniden eskiye
+            self.status = "season games"
+            stats.SCOUTING.set()
+            ids = {}
             for p in self.players:
-                p["champ"] = stats.player_champion(p["puuid"], p["champion_id"], ids[p["puuid"]])
+                per = {k: self.api.season_ids(p["puuid"], q, SEASON_START) for k, q in QUEUES.items()}
+                p["season"] = {k: len(v) for k, v in per.items()}
+                # Solo ve Flex'i tarihe göre birleştir (kimlikler artan sayı: büyük = yeni)
+                ids[p["puuid"]] = sorted(per["solo"] + per["flex"], key=lambda m: int(m.split("_")[1]), reverse=True)
+                if self._stop.is_set():
+                    return
+            todo = {}
+            for p in self.players:
+                all_ids = ids[p["puuid"]]
+                have = stats.known(all_ids)
+                todo[p["puuid"]] = [m for m in all_ids if m not in have]
+                p["champ"] = stats.player_champion(p["puuid"], p["champion_id"], all_ids)
             while any(todo.values()) and not self._stop.is_set():
                 for p in self.players:
                     if todo[p["puuid"]]:
                         mid = todo[p["puuid"]].pop(0)
-                        if not stats.known([mid]) and (info := self.api.match(mid)):
+                        if (info := self.api.match(mid)):
                             stats.store(info, "scout")
+                        else:
+                            ids[p["puuid"]].remove(mid)  # silinmiş maç
                         p["champ"] = stats.player_champion(p["puuid"], p["champion_id"], ids[p["puuid"]])
             self.status = "done"
         except KeyExpired as e:
             self.status, self.error = "error", str(e)
         except Exception as e:
             self.status, self.error = "error", f"{type(e).__name__}: {e}"
+        finally:
+            stats.SCOUTING.clear()

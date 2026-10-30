@@ -22,6 +22,7 @@ from .riot_api import KeyExpired, RiotApi
 
 DB = Path(__file__).resolve().parents[1] / "stats.db"
 ROLES = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
+SCOUTING = threading.Event()  # oyuncu bilgisi yüklenirken toplayıcı bekler
 MIN_GAMES = 8        # bu kadar maçtan azsa öneri "az veri" uyarısıyla gösterilir
 _lock = threading.Lock()
 
@@ -96,15 +97,24 @@ def summary() -> dict:
 
 
 def player_champion(puuid: str, champion: int, match_ids: list[str]) -> dict:
-    """Oyuncunun verilen maçlarından (veritabanına inmiş olanlar) o şampiyonla kazanma durumu."""
+    """Oyuncunun verilen maçlarından (veritabanına inmiş olanlar) o şampiyonla kazanma durumu,
+    kuyruk başına: {"solo": {games, wins, of}, "flex": {...}}. `of` = incelenen maç sayısı."""
+    out = {q: {"games": 0, "wins": 0, "of": 0} for q in ("solo", "flex")}
     if not match_ids:
-        return {"games": 0, "wins": 0, "of": 0}
+        return out
     q = ",".join("?" * len(match_ids))
     with _db() as c:
-        rows = c.execute(f"SELECT champion, win FROM parts WHERE puuid=? AND match_id IN ({q})",
-                         (puuid, *match_ids)).fetchall()
-    on = [w for ch, w in rows if ch == champion]
-    return {"games": len(on), "wins": sum(on), "of": len(rows)}
+        rows = c.execute(f"SELECT p.champion, p.win, m.queue FROM parts p JOIN matches m ON m.id=p.match_id "
+                         f"WHERE p.puuid=? AND p.match_id IN ({q})", (puuid, *match_ids)).fetchall()
+    for ch, win, queue in rows:
+        if queue not in (420, 440):
+            continue
+        o = out["solo" if queue == 420 else "flex"]
+        o["of"] += 1
+        if ch == champion:
+            o["games"] += 1
+            o["wins"] += win
+    return out
 
 
 def main_role(champion: int) -> str:
@@ -209,12 +219,18 @@ class Collector:
                         self.state = "no players"
                         self._wait(600)
                         continue
+                if SCOUTING.is_set():
+                    self.state = "paused for player info"
+                    self._wait(5)
+                    continue
                 self.state = "collecting"
                 puuid = players.pop()
                 ids = api.match_ids(puuid, count=10)
                 for mid in [m for m in ids if m not in known(ids)]:
                     if self._stop.is_set():
                         return
+                    if SCOUTING.is_set():
+                        break
                     if (info := api.match(mid)):
                         store(info)
                         self.added += 1

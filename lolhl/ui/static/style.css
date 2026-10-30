@@ -402,3 +402,4 @@ legend { padding: 0 6px; font-weight: 600; color: var(--accent); }
 b.good { color: var(--kill); }
 b.bad { color: var(--death); }
 @media (max-width: 1150px) { .lv-grid { grid-template-columns: 1fr; } }
+.lv-queue { margin: 0 6px 0 0; }
