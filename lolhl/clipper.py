@@ -76,7 +76,7 @@ def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool,
     önceki anahtar kareye (birkaç saniye geriye) kayar ve olay klibin dışında kalabilir."""
     ff = tool_path("ffmpeg", tool_dir)
     if not ff:
-        raise RuntimeError("ffmpeg bulunamadı. config.toml'da clips.ffmpeg_dir'i ayarla.")
+        raise RuntimeError("ffmpeg not found. Set clips.ffmpeg_dir in config.toml.")
     out_dir.mkdir(parents=True, exist_ok=True)
     order = ["h264_nvenc", "libx264"]
     paths = []
@@ -95,6 +95,6 @@ def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool,
                     break
                 order.remove(enc)  # bu kodlayıcı yok/çalışmıyor; sonrakini dene
             else:
-                raise RuntimeError(f"Klip kesilemedi: {r.stderr.decode(errors='replace')[-300:]}")
+                raise RuntimeError(f"Could not cut clip: {r.stderr.decode(errors='replace')[-300:]}")
         paths.append(dst)
     return paths

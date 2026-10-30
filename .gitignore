@@ -6,3 +6,7 @@ clips/
 __pycache__/
 *.pyc
 ui-error.log
+replay_downloads.json
+*.notes.json
+stats.db
+cache/

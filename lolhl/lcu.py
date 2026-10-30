@@ -32,14 +32,18 @@ class Lcu:
         return True
 
     def get(self, path: str):
+        r = self.call("GET", path)
+        return r.json() if r is not None and r.ok else None
+
+    def call(self, method: str, path: str, body=None) -> requests.Response | None:
+        """Ham istek; client kapalıysa None. Durum koduna bakmak gerekince kullanılır."""
         if self._s is None and not self._connect():
             return None
         try:
-            r = self._s.get(self._base + path, timeout=3)
+            return self._s.request(method, self._base + path, json=body, timeout=5)
         except requests.RequestException:
             self._s = None  # client yeniden başlamış olabilir
             return None
-        return r.json() if r.ok else None
 
     def phase(self) -> str | None:
         """None, Lobby, ChampSelect, GameStart, InProgress, EndOfGame, ..."""
@@ -64,3 +68,21 @@ def live_game_time() -> float | None:
         return float(r.json()["gameTime"]) if r.ok else None
     except (requests.RequestException, KeyError, ValueError):
         return None
+
+
+def live_skin(game_name: str, tag_line: str) -> int | None:
+    """Oyun sırasında oynadığın skinin numarası (0 = varsayılan), yoksa None.
+    Riot'un Live Client Data API'si; maç geçmişinde skin bilgisi tutulmuyor."""
+    try:
+        r = requests.get("https://127.0.0.1:2999/liveclientdata/playerlist", verify=False, timeout=1)
+        if not r.ok:
+            return None
+        me = f"{game_name}#{tag_line}".lower()
+        for p in r.json():
+            if (p.get("riotId") or "").lower() == me or (
+                    (p.get("riotIdGameName") or "").lower() == game_name.lower()
+                    and (p.get("riotIdTagLine") or "").lower() == tag_line.lower()):
+                return int(p.get("skinID", 0)) % 1000  # tam kimlik gelirse (84003) numaraya indir
+    except (requests.RequestException, ValueError, TypeError):
+        pass
+    return None

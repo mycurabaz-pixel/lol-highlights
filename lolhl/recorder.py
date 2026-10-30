@@ -31,7 +31,7 @@ def ensure_obs(cfg: dict) -> "ObsRecorder":
     if not _obs_running():  # açık ama hazır değilse ikinci kopya başlatma
         exe = Path(cfg.get("exe", ""))
         if not exe.is_file():
-            raise RuntimeError("OBS kapalı ve config'teki obs.exe yolu bulunamadı.")
+            raise RuntimeError("OBS is closed and the obs.exe path in config was not found.")
         # OBS kendi klasöründen çalıştırılmazsa locale dosyalarını bulamaz
         subprocess.Popen([str(exe), "--minimize-to-tray", "--disable-shutdown-check"],
                          cwd=exe.parent)
@@ -39,7 +39,7 @@ def ensure_obs(cfg: dict) -> "ObsRecorder":
         time.sleep(1)
         if (r := _try_connect(cfg)):
             return r
-    raise RuntimeError("OBS'e bağlanılamadı. WebSocket sunucusu açık mı, şifre doğru mu?")
+    raise RuntimeError("Could not connect to OBS. Is the WebSocket server on and the password correct?")
 
 
 class ObsRecorder:

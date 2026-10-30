@@ -5,27 +5,40 @@ yerel bir HTTP sunucusundan gelir (video ileri/geri sarma için Range desteği v
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import tomllib
+import uuid
 from collections import deque
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import requests
 import webview
 
+from .. import analysis, ddragon, replay, scout, stats
+from ..clipper import ENCODERS, tool_path
+from ..lcu import Lcu
+from ..riot_api import RiotApi
 from ..watcher import Watcher
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config.toml"
 STATIC = Path(__file__).parent / "static"
 DDRAGON_ALIASES = {"FiddleSticks": "Fiddlesticks"}
+VIDEO_EXT = {".mp4", ".webm", ".mkv", ".mov"}
+PREFIX = "LoL HL: "   # uygulamanın açtığı rün sayfaları ve item setleri bu adla başlar
+POSITIONS = {"top": "TOP", "jungle": "JUNGLE", "middle": "MIDDLE", "bottom": "BOTTOM", "utility": "UTILITY"}
+ROLE_NAMES = {"TOP": "Top", "JUNGLE": "Jungle", "MIDDLE": "Mid", "BOTTOM": "ADC", "UTILITY": "Support"}
+DRAWN_DIR = "cizimli"  # clips/ altında; highlights.json olmadığı için maç listesine karışmaz
 
 
 def load_config() -> dict:
@@ -43,21 +56,32 @@ def clips_dir(cfg: dict) -> Path:
 class Handler(SimpleHTTPRequestHandler):
     clips_root: Path = ROOT / "clips"
     recordings_root: Path = ROOT / "recordings"
+    game_clips_root: Path | None = None  # LoL'ün kendi kayıt klasörü (tekrardan alınan klipler)
 
     def log_message(self, *_):
         pass
 
-    def translate_path(self, path: str) -> str:
+    @classmethod
+    def roots(cls) -> dict[str, Path]:
+        r = {"clips": cls.clips_root, "recordings": cls.recordings_root}
+        if cls.game_clips_root:
+            r["lolclips"] = cls.game_clips_root
+        return r
+
+    @classmethod
+    def resolve(cls, path: str) -> Path:
         rel = unquote(urlparse(path).path).lstrip("/")
-        if rel.startswith("clips/"):
-            base, rel = self.clips_root, rel[len("clips/"):]
-        elif rel.startswith("recordings/"):
-            base, rel = self.recordings_root, rel[len("recordings/"):]
+        prefix, _, rest = rel.partition("/")
+        if prefix in cls.roots():
+            base, rel = cls.roots()[prefix], rest
         else:
             base, rel = STATIC, rel or "index.html"
         target = (base / rel).resolve()
         # klasör dışına çıkmayı engelle
-        return str(target) if target.is_relative_to(base.resolve()) else str(STATIC / "404")
+        return target if target.is_relative_to(base.resolve()) else STATIC / "404"
+
+    def translate_path(self, path: str) -> str:
+        return str(self.resolve(path))
 
     def send_head(self):
         """<video> sarma yapabilsin diye Range isteklerini destekler."""
@@ -92,6 +116,11 @@ class Handler(SimpleHTTPRequestHandler):
             pass  # kullanıcı başka klibe geçti
 
 
+def notes_file(video: Path) -> Path:
+    """Bir videonun çizimleri yanında durur: klip.mp4 -> klip.mp4.notes.json"""
+    return video.with_name(video.name + ".notes.json")
+
+
 def start_server(cfg: dict) -> int:
     Handler.clips_root = clips_dir(cfg)
     Handler.recordings_root = Path(cfg["obs"]["recordings_dir"])
@@ -122,31 +151,36 @@ def set_toml(text: str, section: str, key: str, literal: str) -> str:
 class Api:
     def __init__(self):
         self.cfg = load_config()
-        self.logs: deque[str] = deque(maxlen=300)
-        self.watcher: Watcher | None = None
-        self.thread: threading.Thread | None = None
+        self._logs: deque[str] = deque(maxlen=300)
+        self._watcher: Watcher | None = None
+        self._thread: threading.Thread | None = None
         self.port = start_server(self.cfg)
-        self.window: webview.Window | None = None
+        self._window: webview.Window | None = None
+        self._puuid: str | None = None
+        self._lcu = Lcu(self.cfg["lol"]["install_dir"])
+        self._replays = replay.ReplayClient(self._lcu, ROOT / "replay_downloads.json")
+        self._collector: stats.Collector | None = None
+        self._scout: scout.Scout | None = None
 
     def _log(self, msg: str) -> None:
-        self.logs.append(time.strftime("%H:%M:%S ") + msg)
+        self._logs.append(time.strftime("%H:%M:%S ") + msg)
 
     # --- watcher ---
     def start(self):
-        if self.thread and self.thread.is_alive():
+        if self._thread and self._thread.is_alive():
             return
         self.cfg = load_config()
-        self.watcher = Watcher(self.cfg, self._log)
-        self.thread = threading.Thread(target=self.watcher.run, daemon=True)
-        self.thread.start()
+        self._watcher = Watcher(self.cfg, self._log)
+        self._thread = threading.Thread(target=self._watcher.run, daemon=True)
+        self._thread.start()
 
     def stop(self):
-        if self.watcher:
-            self.watcher.stop()
+        if self._watcher:
+            self._watcher.stop()
 
     def state(self, since: int = 0):
-        w = self.watcher
-        logs = list(self.logs)
+        w = self._watcher
+        logs = list(self._logs)
         return {"state": w.state if w else "stopped", "error": w.error if w else "",
                 "logs": logs[since:] if since <= len(logs) else logs, "log_count": len(logs)}
 
@@ -185,13 +219,14 @@ class Api:
                     "file": c["file"],
                     "url": f"/clips/{folder.name}/{c['file']}",
                     "duration": round(c["end"] - c["start"], 1),
+                    "start": c["start"],  # tam kayıttaki saniye; oyun saati = start + t - offset
                     "time": c["moments"][0]["game_time"] if c["moments"] else 0,
                     "moments": c["moments"],
                 })
             out.append({
                 "folder": folder.name, "match_id": meta.get("match_id", folder.name),
-                "champion": champ, "icon": DDRAGON_ALIASES.get(champ, champ),
-                "kda": meta.get("kda"),
+                "champion": champ, "icon": DDRAGON_ALIASES.get(champ, champ), "skin": meta.get("skin") or 0,
+                "kda": meta.get("kda"), "offset": meta.get("offset", 0),
                 "created": meta.get("created") or meta_file.stat().st_mtime,
                 "clips": clips,
                 "recording": recordings.get(meta.get("match_id")),
@@ -201,16 +236,48 @@ class Api:
     def _folder(self, folder: str) -> Path:
         p = (clips_dir(self.cfg) / folder).resolve()
         if not p.is_relative_to(clips_dir(self.cfg).resolve()) or not p.is_dir():
-            raise ValueError("Geçersiz klasör")
+            raise ValueError("Invalid folder")
         return p
 
     def delete_clip(self, folder: str, file: str):
         d = self._folder(folder)
         (d / Path(file).name).unlink(missing_ok=True)
+        notes_file(d / Path(file).name).unlink(missing_ok=True)
         meta_file = d / "highlights.json"
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         meta["clips"] = [c for c in meta["clips"] if c["file"] != file]
         meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def match_analysis(self, folder: str):
+        """Grafiklerin verisi. Ham veri maç klasöründe yoksa (eski maçlar) Riot API'den
+        bir kez çekilip saklanır."""
+        d = self._folder(folder)
+        raw = analysis.load_raw(d)
+        if raw is None:
+            meta = json.loads((d / "highlights.json").read_text(encoding="utf-8"))
+            r = self.cfg["riot"]
+            try:
+                api = RiotApi(r["api_key"], r["platform"])
+                if not self._puuid:
+                    self._puuid = api.puuid(r["game_name"], r["tag_line"])
+                info, tl = api.fetch(meta["match_id"], timeout=0)
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code in (401, 403):
+                    raise RuntimeError("Riot API key is invalid or expired; renew it in Settings.")
+                raise
+            analysis.save_raw(d, info, tl, self._puuid)
+            raw = analysis.load_raw(d)
+        return analysis.build(raw["match"], raw["timeline"], raw["puuid"])
+
+    def camps_load(self, folder: str):
+        """Zamanlayıcıda elle işaretlenen orman kampı kesimleri (Riot verisinde yok)."""
+        try:
+            return json.loads((self._folder(folder) / "camps.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    def camps_save(self, folder: str, marks: list):
+        (self._folder(folder) / "camps.json").write_text(json.dumps(marks), encoding="utf-8")
 
     def delete_match(self, folder: str):
         shutil.rmtree(self._folder(folder))
@@ -222,6 +289,254 @@ class Api:
             subprocess.Popen(["explorer", "/select,", str(self._folder(folder) / Path(file).name)])
         else:
             os.startfile(self._folder(folder))
+
+    # --- tekrarlar (LCU) ---
+    def _replay_folders(self) -> dict:
+        f = self._replays.folders()
+        Handler.game_clips_root = Path(f["highlights"])
+        return f
+
+    def replay_overview(self):
+        return {**self._replays.status(), "quota": self._replays.quota(),
+                "api_enabled": replay.replay_api_enabled(self.cfg["lol"]["install_dir"])}
+
+    def replay_matches(self):
+        return self._replays.matches()
+
+    def replay_state(self, game: dict):
+        return self._replays.replay_state(game)
+
+    def replay_download(self, game: dict):
+        return self._replays.download(game)
+
+    def replay_watch(self, game_id: int):
+        self._replays.watch(int(game_id))
+
+    def local_replays(self):
+        return replay.list_replays(Path(self._replay_folders()["replays"]))
+
+    def game_clips(self):
+        """LoL'ün kayıt klasöründeki videolar (Tekrar kontrolden alınan kayıtlar)."""
+        folder = Path(self._replay_folders()["highlights"])
+        out = []
+        for p in folder.glob("*"):
+            if p.suffix.lower() in VIDEO_EXT:
+                st = p.stat()
+                out.append({"file": p.name, "url": f"/lolclips/{p.name}", "size": st.st_size,
+                            "mtime": st.st_mtime, "notes": notes_file(p).exists()})
+        return sorted(out, key=lambda c: c["mtime"], reverse=True)
+
+    def open_replay_folder(self, which: str):
+        p = Path(self._replay_folders()["replays" if which == "replays" else "highlights"])
+        p.mkdir(parents=True, exist_ok=True)
+        os.startfile(p)
+
+    # --- tekrar kontrol (Replay API; tekrar açıkken) ---
+    def replay_status(self):
+        return replay.replay_status()
+
+    def replay_enable_api(self):
+        return replay.enable_replay_api(self.cfg["lol"]["install_dir"])
+
+    def replay_playback(self, patch: dict):
+        return replay.playback(patch)
+
+    def replay_render(self, patch: dict):
+        return replay.render(patch)
+
+    def replay_camera(self, preset: str):
+        return replay.camera(preset)
+
+    def replay_players(self):
+        return replay.players()
+
+    def replay_follow(self, names: list):
+        return replay.follow(names)
+
+    def replay_recording(self, patch: dict | None = None):
+        return replay.recording(patch)
+
+    # --- çizimler ---
+    def _video(self, url: str) -> Path:
+        """Arayüzdeki video adresini (/clips/..., /recordings/..., /lolclips/...) dosyaya çevirir."""
+        p = Handler.resolve(url)
+        if p.suffix.lower() not in VIDEO_EXT or not p.is_file():
+            raise ValueError("Video not found")
+        return p
+
+    def notes_load(self, url: str):
+        try:
+            return json.loads(notes_file(self._video(url)).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"annotations": []}
+
+    def notes_save(self, url: str, data: dict):
+        f = notes_file(self._video(url))
+        if data.get("annotations"):
+            f.write_text(json.dumps({"version": 1, "annotations": data["annotations"]},
+                                    ensure_ascii=False), encoding="utf-8")
+        else:
+            f.unlink(missing_ok=True)
+
+    def export_drawn(self, url: str, layers: list[dict]):
+        """Çizimleri ffmpeg ile videoya gömer. Her katman, videonun boyutunda saydam bir PNG
+        ve görüneceği zaman aralığı; video yeniden kodlanır, ses olduğu gibi kopyalanır."""
+        video = self._video(url)
+        if not layers:
+            raise ValueError("This video has no drawings")
+        tool_dir = self.cfg["clips"].get("ffmpeg_dir", "")
+        ff = tool_path("ffmpeg", tool_dir)
+        if not ff:
+            raise RuntimeError("ffmpeg not found. Set clips.ffmpeg_dir in config.toml.")
+        out_dir = clips_dir(self.cfg) / DRAWN_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dst = out_dir / f"{video.stem}-cizimli.mp4"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs, chains, last = [], [], "0:v"
+            for i, layer in enumerate(layers, 1):
+                png = Path(tmp) / f"{i}.png"
+                png.write_bytes(base64.b64decode(layer["png"].split(",")[-1]))
+                inputs += ["-i", str(png)]
+                start, end = float(layer["start"]), float(layer["end"])
+                chains.append(f"[{last}][{i}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
+                last = f"v{i}"
+            script = Path(tmp) / "filter.txt"  # çok çizimde komut satırı sınırına takılmasın
+            script.write_text(";".join(chains), encoding="utf-8")
+            base = [ff, "-y", "-loglevel", "error", "-i", str(video), *inputs,
+                    "-/filter_complex", str(script), "-map", f"[{last}]", "-map", "0:a?"]
+            for enc in ("h264_nvenc", "libx264"):
+                r = subprocess.run([*base, *ENCODERS[enc], "-c:a", "aac", "-b:a", "160k",
+                                    "-movflags", "+faststart", str(dst)], capture_output=True)
+                if r.returncode == 0:
+                    break
+            else:
+                raise RuntimeError(f"Export failed: {r.stderr.decode(errors='replace')[-300:]}")
+        subprocess.Popen(["explorer", "/select,", str(dst)])
+        return str(dst)
+
+    def reveal_video(self, url: str):
+        subprocess.Popen(["explorer", "/select,", str(self._video(url))])
+
+    # --- canlı: şampiyon seçimi önerileri ve oyuncu bilgisi ---
+    def _riot(self) -> RiotApi:
+        r = self.cfg["riot"]
+        return RiotApi(r["api_key"], r["platform"])
+
+    def _start_collector(self) -> None:
+        self._collector = stats.Collector(self.cfg, self._log)
+        threading.Thread(target=self._collector.run, daemon=True).start()
+
+    def live(self):
+        """Live sekmesinin durumu: oyun fazı, şampiyon seçimindeki şampiyonun, oyundaki 10 oyuncu."""
+        phase = self._lcu.phase()
+        out = {"phase": phase, "pick": None, "scout": None, "ddragon": ddragon.version(),
+               "stats": {**stats.summary(), "collector": self._collector.state if self._collector else "off"}}
+        if phase == "ChampSelect":
+            s = self._lcu.get("/lol-champ-select/v1/session") or {}
+            me = next((p for p in s.get("myTeam", []) if p.get("cellId") == s.get("localPlayerCellId")), None)
+            cid = me and (me.get("championId") or me.get("championPickIntent"))
+            if cid:
+                out["pick"] = {"champion_id": cid, "role": POSITIONS.get(me.get("assignedPosition") or "", ""),
+                               "locked": bool(me.get("championId"))}
+        if phase in ("InProgress", "Reconnect") and (not self._scout or self._scout.source != "live"):
+            players = scout.live_players(self._lcu, self._riot())
+            if players:
+                self._start_scout(players, "live")
+        if self._scout:
+            out["scout"] = self._scout.snapshot()
+        return out
+
+    def _start_scout(self, players: list[dict], source: str) -> None:
+        if self._scout:
+            self._scout.stop()
+        self._scout = scout.Scout(self._riot(), players, source)
+
+    def scout_preview(self):
+        """Canlı oyun yokken ekranı denemek için son maçın 10 oyuncusu."""
+        api = self._riot()
+        r = self.cfg["riot"]
+        if not self._puuid:
+            self._puuid = api.puuid(r["game_name"], r["tag_line"])
+        mid = api.last_match_id(self._puuid)
+        info = api.match(mid) if mid else None
+        if not info:
+            raise RuntimeError("No recent match found")
+        stats.store(info, "scout")
+        self._start_scout(scout.match_players(info, self._puuid), "preview")
+
+    def suggest(self, champion_id: int, role: str = ""):
+        s = stats.suggest(int(champion_id), role)
+        names = ddragon.runes()
+        items = ddragon.items()
+        for page in s["runes"]:
+            page["names"] = [names.get(i, {}).get("name", str(i)) for i in page["perks"]]
+            page["icons"] = [names.get(i, {}).get("icon", "") for i in page["perks"]]
+            page["tree_names"] = [names.get(page["primary"], {}).get("name", ""),
+                                  names.get(page["sub"], {}).get("name", "")]
+            page["tree_icons"] = [names.get(page["primary"], {}).get("icon", ""),
+                                  names.get(page["sub"], {}).get("icon", "")]
+            page["shard_names"] = [ddragon.SHARDS.get(i, str(i)) for i in page["shards"]]
+        for key in ("core", "boots", "situational"):
+            for it in s[key]:
+                it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
+        c = ddragon.champions().get(int(champion_id), {})
+        return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
+                "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
+
+    def champions(self):
+        return sorted(({"id": k, "key": v["id"], "name": v["name"]} for k, v in ddragon.champions().items()),
+                      key=lambda c: c["name"])
+
+    def _title(self, s: dict) -> str:
+        return f"{PREFIX}{s['champion_name']} {s['role_name']}".strip()
+
+    def import_runes(self, champion_id: int, role: str = ""):
+        """En çok kullanılan rün sayfasını client'a ekler. Yalnızca kendi açtığımız
+        "LoL HL" sayfalarını siler; senin sayfalarına dokunmaz."""
+        s = self.suggest(champion_id, role)
+        if not s["runes"]:
+            raise RuntimeError("No rune data for this champion yet")
+        page = s["runes"][0]
+        pages = self._lcu.get("/lol-perks/v1/pages")
+        if pages is None:
+            raise RuntimeError("LoL client is not open")
+        for p in pages:
+            if p.get("name", "").startswith(PREFIX) and p.get("isDeletable"):
+                self._lcu.call("DELETE", f"/lol-perks/v1/pages/{p['id']}")
+        r = self._lcu.call("POST", "/lol-perks/v1/pages", {
+            "name": self._title(s), "primaryStyleId": page["primary"], "subStyleId": page["sub"],
+            "selectedPerkIds": page["perks"] + page["shards"], "current": True})
+        if r is None or not r.ok:
+            raise RuntimeError("No free rune page. Delete one in the client, or rename one so it starts "
+                               f"with '{PREFIX.strip()}' and the app will replace it.")
+        return self._title(s)
+
+    def import_items(self, champion_id: int, role: str = ""):
+        """Önerilen item yolunu client'a item seti olarak ekler (mağazada önerilenlerin yanında)."""
+        s = self.suggest(champion_id, role)
+        if not s["core"]:
+            raise RuntimeError("No item data for this champion yet")
+        me = self._lcu.get("/lol-summoner/v1/current-summoner")
+        if not me:
+            raise RuntimeError("LoL client is not open")
+        path = f"/lol-item-sets/v1/item-sets/{me['summonerId']}/sets"
+        data = self._lcu.get(path) or {"accountId": me.get("accountId"), "itemSets": []}
+        blk = lambda name, its: {"type": name, "items": [{"id": str(i["id"]), "count": 1} for i in its]}  # noqa: E731
+        # aynı şampiyon için önceki setimizi değiştir, diğer setlere dokunma
+        data["itemSets"] = [x for x in data.get("itemSets", []) if not x.get("title", "").startswith(PREFIX)
+                            or int(champion_id) not in x.get("associatedChampions", [])]
+        data["itemSets"].append({
+            "title": self._title(s), "type": "custom", "map": "any", "mode": "any", "uid": str(uuid.uuid4()),
+            "associatedChampions": [int(champion_id)], "associatedMaps": [11], "sortrank": 0,
+            "startedFrom": "blank", "preferredItemSlots": [],
+            "blocks": [blk(f"Core ({s['games']} high-elo games)", s["core"]), blk("Boots", s["boots"]),
+                       blk("Situational", s["situational"])],
+        })
+        r = self._lcu.call("PUT", path, data)
+        if r is None or not r.ok:
+            raise RuntimeError(f"Client refused the item set ({r.status_code if r is not None else 'closed'})")
+        return self._title(s)
 
     # --- ayarlar ---
     def settings(self):
@@ -249,11 +564,13 @@ class Api:
         tomllib.loads(t)  # bozuk dosya yazma
         CONFIG.write_text(t, encoding="utf-8")
         self.cfg = load_config()
+        if self._collector:
+            self._collector.update(self.cfg)
         # yeni ayarlar watcher yeniden başlayınca geçerli olur
-        busy = self.watcher and self.watcher.state in ("recording", "processing")
-        if not busy and self.thread and self.thread.is_alive():
+        busy = self._watcher and self._watcher.state in ("recording", "processing")
+        if not busy and self._thread and self._thread.is_alive():
             self.stop()
-            self.thread.join(timeout=10)
+            self._thread.join(timeout=10)
             self.start()
         return {"restarted": not busy}
 
@@ -265,17 +582,18 @@ def main() -> None:
         "LoL Highlights", f"http://127.0.0.1:{api.port}/", js_api=api,
         width=1280, height=800, min_size=(960, 600), background_color="#0e1015",
     )
-    api.window = window
+    api._window = window
 
     def on_closing():
-        if api.watcher and api.watcher.state == "recording":
+        if api._watcher and api._watcher.state == "recording":
             return window.create_confirmation_dialog(
-                "Kayıt sürüyor", "Maç kaydediliyor. Kapatırsan kayıt durur ve klipler "
-                "bir sonraki açılışta çıkarılır. Yine de kapatılsın mı?")
+                "Recording in progress", "A match is being recorded. If you close, recording stops and clips "
+                "will be cut on next start. Close anyway?")
         return True
 
     window.events.closing += on_closing
     api.start()
+    api._start_collector()
     webview.start(gui="edgechromium", debug=os.environ.get("LOLHL_DEBUG") == "1")
     api.stop()
 

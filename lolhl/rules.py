@@ -30,7 +30,7 @@ class Rule:
     def _hl(self, tag: str, ev: GameEvent, m: MatchData) -> Highlight:
         killer = m.participants.get(ev.killer_id)
         victim = m.participants.get(ev.victim_id)
-        label = f"{killer.champion if killer else 'Minion/Kule'} -> {victim.champion if victim else '?'}"
+        label = f"{killer.champion if killer else 'Minion/Tower'} -> {victim.champion if victim else '?'}"
         return Highlight(tag, ev.game_time, ev, self.pre, self.post, label)
 
 
@@ -70,7 +70,7 @@ def build_rules(cfg: dict) -> list[Rule]:
     out = []
     for name in enabled:
         if name not in RULES:
-            raise ValueError(f"Bilinmeyen kural: {name}. Mevcut: {', '.join(RULES)}")
+            raise ValueError(f"Unknown rule: {name}. Available: {', '.join(RULES)}")
         out.append(RULES[name](**{**defaults, **cfg.get(name, {})}))
     return out
 

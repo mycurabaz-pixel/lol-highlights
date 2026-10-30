@@ -14,4 +14,4 @@ except Exception:
     (ROOT / "ui-error.log").write_text(traceback.format_exc(), encoding="utf-8")
     import ctypes
     ctypes.windll.user32.MessageBoxW(
-        0, f"Uygulama açılamadı. Ayrıntılar:\n{ROOT / 'ui-error.log'}", "LoL Highlights", 0x10)
+        0, f"The app could not start. Details:\n{ROOT / 'ui-error.log'}", "LoL Highlights", 0x10)

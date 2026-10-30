@@ -26,8 +26,8 @@ def main() -> None:
     sub.add_parser("watch")
     p = sub.add_parser("process")
     p.add_argument("video")
-    p.add_argument("--match", help="örn. TR1_1234567890 (yoksa video yanındaki .json)")
-    p.add_argument("--offset", type=float, help="video_zamanı - oyun_zamanı (saniye)")
+    p.add_argument("--match", help="e.g. TR1_1234567890 (otherwise the .json next to the video)")
+    p.add_argument("--offset", type=float, help="video_time - game_time (seconds)")
     args = ap.parse_args()
     cfg = load_config(args.config)
 
@@ -41,7 +41,7 @@ def main() -> None:
     match_id = args.match or meta.get("match_id")
     offset = args.offset if args.offset is not None else meta.get("offset")
     if match_id is None or offset is None:
-        ap.error("--match ve --offset gerekli (video yanında .json yok)")
+        ap.error("--match and --offset are required (no .json next to the video)")
 
     api = RiotApi(cfg["riot"]["api_key"], cfg["riot"]["platform"])
     puuid = api.puuid(cfg["riot"]["game_name"], cfg["riot"]["tag_line"])

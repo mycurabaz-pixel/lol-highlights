@@ -1,10 +1,12 @@
 const $ = (s) => document.querySelector(s);
-const TAGS = { kill: "Kill", death: "Ölüm", assist: "Asist" };
+const TAGS = { kill: "Kill", death: "Death", assist: "Assist" };
 const STATES = {
-  stopped: "Durduruldu", starting: "Başlatılıyor...", waiting: "Maç bekleniyor",
-  recording: "Maç kaydediliyor", processing: "Klipler hazırlanıyor", error: "Hata",
+  stopped: "Stopped", starting: "Starting...", waiting: "Waiting for a match",
+  recording: "Recording match", processing: "Preparing clips", error: "Error",
 };
-const SPLASH = (c) => `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${c}_0.jpg`;
+const SPLASH = (c, n = 0) => `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${c}_${n}.jpg`;
+// skin görseli yoksa (ör. chroma) alttaki varsayılan splash görünür
+const splashBg = (c, n) => `url('${SPLASH(c, n)}')` + (n ? `, url('${SPLASH(c)}')` : "");
 
 let api;
 let matches = [];
@@ -19,9 +21,9 @@ const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Mat
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const ago = (t) => {
   const d = (Date.now() / 1000 - t) / 60;
-  if (d < 60) return `${Math.max(1, Math.round(d))} dk önce`;
-  if (d < 1440) return `${Math.round(d / 60)} saat önce`;
-  return new Date(t * 1000).toLocaleDateString("tr-TR", { day: "numeric", month: "long" });
+  if (d < 60) return `${Math.max(1, Math.round(d))} min ago`;
+  if (d < 1440) return `${Math.round(d / 60)} h ago`;
+  return new Date(t * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "long" });
 };
 const tagCounts = (clips) => {
   const n = { kill: 0, death: 0, assist: 0 };
@@ -34,7 +36,7 @@ function show(view) {
   $(`#view-${view}`).classList.remove("hidden");
   document.querySelectorAll(".nav").forEach((b) =>
     b.classList.toggle("active", b.dataset.view === view || (view === "match" && b.dataset.view === "matches")));
-  if (view !== "match") $("#video").pause();
+  if (view !== "match") { $("#video").pause(); Draw.off(); Timers.off(); }
 }
 
 // ---------- maç listesi ----------
@@ -42,18 +44,18 @@ async function loadMatches() {
   matches = await api.matches();
   const grid = $("#grid");
   $("#empty").classList.toggle("hidden", matches.length > 0);
-  $("#match-count").textContent = matches.length ? `${matches.length} maç` : "";
+  $("#match-count").textContent = matches.length ? `${matches.length} matches` : "";
   grid.innerHTML = matches.map((m, i) => {
     const n = tagCounts(m.clips);
     const kda = m.kda ? `<span class="kda"><b>${m.kda[0]}</b> / <b>${m.kda[1]}</b> / <b>${m.kda[2]}</b></span>` : "";
-    return `<div class="card" data-i="${i}" style="background-image:url('${SPLASH(esc(m.icon))}')">
-      ${m.recording ? `<span class="badge-full">${i === 0 ? "Son oyun · " : ""}Tam kayıt</span>` : ""}
-      <span class="pill">${m.clips.length} klip</span>
+    return `<div class="card" data-i="${i}" style="background-image:${splashBg(esc(m.icon), +m.skin || 0)}">
+      ${m.recording ? `<span class="badge-full">${i === 0 ? "Last game · " : ""}Full recording</span>` : ""}
+      <span class="pill">${m.clips.length} clips</span>
       <div class="card-body">
         <div class="card-champ">${esc(m.champion)}</div>
         <div class="card-meta">${kda}
-          <span style="color:var(--kill)">${n.kill} kill</span>
-          <span style="color:var(--death)">${n.death} ölüm</span>
+          <span style="color:var(--kill)">${n.kill} kills</span>
+          <span style="color:var(--death)">${n.death} deaths</span>
           <span class="spacer"></span><span>${ago(m.created)}</span>
         </div>
       </div></div>`;
@@ -62,20 +64,52 @@ async function loadMatches() {
 }
 
 // ---------- maç detayı ----------
+// Olaysız klipler (tekrardan alınan kayıtlar) filtreden bağımsız hep görünür
 function visibleClips() {
-  return current.clips.filter((c) => c.moments.some((m) => filter.has(m.tag)));
+  return current.clips.filter((c) => !c.moments.length || c.moments.some((m) => filter.has(m.tag)));
 }
 
+// external: maç klasörü olmayan tek video (tekrardan alınan kayıt); silinmez, Tekrarlar'a döner
 function openMatch(m, startMode = "clips") {
   current = m;
   $("#m-title").textContent = m.champion;
   $("#m-sub").textContent = `${m.kda ? m.kda.join(" / ") + " · " : ""}${m.match_id} · ${ago(m.created)}`;
+  $("#back").textContent = m.external ? "← Replays" : "← Matches";
+  $("#m-delete").classList.toggle("hidden", !!m.external);
+  $("#c-delete").classList.toggle("ext-hidden", !!m.external);
   const full = document.querySelector('.mode[data-mode="full"]');
   full.disabled = !m.recording;
-  full.title = m.recording ? "" : "Bu maçın tam kaydı saklanmıyor (sadece son maçlar saklanır)";
+  full.title = m.recording ? "" : "No full recording kept for this match (only the latest matches are kept)";
   renderFilters();
   show("match");
   setMode(m.recording ? startMode : "clips");
+  Analysis.load(m);
+}
+
+// oyun saati <-> video: tam maçta kaydın offset'i, klipte klibin kayıttaki başlangıcı
+function currentGameTime() {
+  const v = $("#video");
+  if (!current || current.external) return null;
+  if (mode === "full") return v.currentTime - current.recording.offset;
+  const c = visibleClips()[playing];
+  return c && c.start != null ? c.start + v.currentTime - current.offset : null;
+}
+
+// Analizden bir ana gitmek: tam kayıt varsa orada 5 sn öncesine, yoksa o anı içeren klibe
+function seekGame(t) {
+  const v = $("#video");
+  const top = () => $("#view-match").scrollTo({ top: 0, behavior: "smooth" });
+  if (current.recording) {
+    const go = () => { v.currentTime = Math.max(0, t + current.recording.offset - 5); v.play().catch(() => {}); };
+    if (mode !== "full") { setMode("full"); v.addEventListener("loadedmetadata", go, { once: true }); } else go();
+    return top();
+  }
+  const list = visibleClips();
+  const i = list.findIndex((c) => c.start != null && t >= c.start - current.offset && t <= c.start - current.offset + c.duration);
+  if (i < 0) return Analysis.flash(`No video for ${mmss(t)}: there is no full recording of this match and no clip at that moment.`);
+  play(i);
+  v.addEventListener("loadedmetadata", () => (v.currentTime = Math.max(0, t - (list[i].start - current.offset))), { once: true });
+  top();
 }
 
 // ---------- klipler / tam maç ----------
@@ -92,8 +126,8 @@ function setMode(m) {
     const v = $("#video");
     v.src = encodeURI(current.recording.url);
     v.addEventListener("loadedmetadata", renderMarkers, { once: true });
-    $("#now-title").textContent = "Tam maç";
-    $("#now-sub").textContent = "Listeden ya da çizelgeden bir ana tıkla";
+    $("#now-title").textContent = "Full match";
+    $("#now-sub").textContent = "Click a moment in the list or on the timeline";
   } else if (visibleClips().length) play(0);
 }
 
@@ -109,8 +143,14 @@ function renderMarkers() {
   $("#markers").innerHTML = marks.map((m) =>
     `<span class="mk ${m.tag}" style="left:${(videoTime(m.game_time) / v.duration) * 100}%"
       title="${mmss(m.game_time)} · ${TAGS[m.tag] || m.tag}: ${esc(m.label)}"></span>`).join("") +
+    Draw.list().map((a) =>
+      `<span class="mk note" style="left:${(a.t / v.duration) * 100}%" title="Drawing · ${mmss(a.t)}"></span>`).join("") +
+    Analysis.markers().map((o) =>
+      `<span class="mk obj" style="left:${(videoTime(o.t) / v.duration) * 100}%;background:${o.color}" title="${esc(o.title)}"></span>`).join("") +
     `<span class="head" id="head"></span>`;
 }
+document.addEventListener("drawings-changed", renderMarkers);
+document.addEventListener("analysis-changed", renderMarkers);
 
 $("#markers").onclick = (e) => {
   const v = $("#video");
@@ -122,6 +162,7 @@ $("#video").addEventListener("timeupdate", () => {
   const v = $("#video");
   const head = $("#head");
   if (mode === "full" && head && v.duration) head.style.left = `${(v.currentTime / v.duration) * 100}%`;
+  Analysis.setTime(currentGameTime());
 });
 
 function renderFilters() {
@@ -146,9 +187,9 @@ function renderClips() {
       <span class="clip-time">${mmss(c.time)}</span>
       <div class="clip-main">
         <div class="tags">${c.moments.map((m) => `<span class="tag ${m.tag}">${TAGS[m.tag] || m.tag}</span>`).join("")}</div>
-        <div class="clip-label">${c.moments.map((m) => esc(m.label)).join(" · ")}</div>
+        <div class="clip-label">${c.moments.length ? c.moments.map((m) => esc(m.label)).join(" · ") : esc(c.file)}</div>
       </div>
-      <span class="clip-dur">${Math.round(c.duration)} sn</span>
+      <span class="clip-dur">${c.duration ? Math.round(c.duration) + " s" : ""}</span>
     </li>`).join("");
   $("#clips").querySelectorAll(".clip").forEach((el) => (el.onclick = () => play(+el.dataset.i)));
 }
@@ -166,7 +207,8 @@ function play(i) {
     v.src = encodeURI(c.url).replace(/\+/g, "%2B");
   }
   v.play().catch(() => {});
-  $("#now-title").textContent = c.moments.map((m) => TAGS[m.tag] || m.tag).join(" + ") + ` · ${mmss(c.time)}`;
+  $("#now-title").textContent = c.moments.length
+    ? c.moments.map((m) => TAGS[m.tag] || m.tag).join(" + ") + ` · ${mmss(c.time)}` : c.file;
   $("#now-sub").textContent = c.moments.map((m) => m.label).join(" · ");
   renderClips();
   document.querySelector(".clip.playing")?.scrollIntoView({ block: "nearest" });
@@ -213,11 +255,16 @@ document.addEventListener("keydown", (e) => {
   if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
 });
 
-$("#back").onclick = () => { show("matches"); loadMatches(); };
-$("#c-show").onclick = () => { const c = visibleClips()[playing]; c && api.open_folder(current.folder, c.file); };
+$("#back").onclick = () => {
+  if (current?.external) { show("replays"); loadReplays(); } else { show("matches"); loadMatches(); }
+};
+$("#c-show").onclick = () => {
+  const c = visibleClips()[playing];
+  if (c) current.external ? api.reveal_video(c.url) : api.open_folder(current.folder, c.file);
+};
 $("#c-delete").onclick = async () => {
   const c = visibleClips()[playing];
-  if (!c || !confirm("Bu klip silinsin mi?")) return;
+  if (!c || !confirm("Delete this clip?")) return;
   $("#video").removeAttribute("src"); $("#video").load(); // dosya kilidini bırak
   await api.delete_clip(current.folder, c.file);
   current.clips = current.clips.filter((x) => x.file !== c.file);
@@ -225,7 +272,7 @@ $("#c-delete").onclick = async () => {
   play(Math.min(playing, visibleClips().length - 1));
 };
 $("#m-delete").onclick = async () => {
-  if (!confirm(`${current.champion} maçının tüm klipleri silinsin mi?`)) return;
+  if (!confirm(`Delete all clips of this ${current.champion} match?`)) return;
   $("#video").removeAttribute("src"); $("#video").load();
   await api.delete_match(current.folder);
   show("matches"); loadMatches();
@@ -243,14 +290,14 @@ async function poll() {
     $("#status").dataset.state = s.state;
     $("#status-text").textContent = STATES[s.state] || s.state;
     const running = !["stopped", "error"].includes(s.state);
-    $("#toggle").textContent = running ? "Durdur" : "Başlat";
+    $("#toggle").textContent = running ? "Stop" : "Start";
 
     const banner = $("#banner");
     if (s.state === "error") {
       const keyErr = /401|403|api_key/i.test(s.error);
       banner.innerHTML = keyErr
-        ? `Riot API anahtarı geçersiz ya da süresi dolmuş. <a id="go-settings">Ayarlar'dan yenisini gir</a>.`
-        : `Hata: ${esc(s.error)}`;
+        ? `Riot API key is invalid or expired. <a id="go-settings">Enter a new one in Settings</a>.`
+        : `Error: ${esc(s.error)}`;
       banner.classList.remove("hidden");
       $("#go-settings")?.addEventListener("click", () => { show("settings"); loadSettings(); });
     } else banner.classList.add("hidden");
@@ -262,7 +309,7 @@ async function poll() {
 }
 
 $("#toggle").onclick = async () => {
-  const running = $("#toggle").textContent === "Durdur";
+  const running = $("#toggle").textContent === "Stop";
   if (running) await api.stop(); else await api.start();
   poll();
 };
@@ -281,18 +328,20 @@ $("#settings").onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
   const rules = [...f.querySelectorAll("[name=rule]:checked")].map((c) => c.value);
-  if (!rules.length) { $("#saved").textContent = "En az bir tür seç."; return; }
+  if (!rules.length) { $("#saved").textContent = "Pick at least one type."; return; }
   const data = Object.fromEntries(["api_key", "game_name", "tag_line", "pre", "post", "death_pre", "keep_recordings"].map((k) => [k, f[k].value]));
   try {
     const r = await api.save_settings({ ...data, rules });
-    $("#saved").textContent = r.restarted ? "Kaydedildi." : "Kaydedildi; maç bitince geçerli olacak.";
+    $("#saved").textContent = r.restarted ? "Saved." : "Saved; takes effect after the current match.";
     poll();
-  } catch (err) { $("#saved").textContent = "Kaydedilemedi: " + err; }
+  } catch (err) { $("#saved").textContent = "Could not save: " + err; }
 };
 
 document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => {
   show(b.dataset.view);
   if (b.dataset.view === "matches") loadMatches();
+  if (b.dataset.view === "replays") loadReplays();
+  if (b.dataset.view === "live") Live.open();
   if (b.dataset.view === "settings") loadSettings();
   if (b.dataset.view === "log") $("#log").scrollTop = 1e9;
 }));

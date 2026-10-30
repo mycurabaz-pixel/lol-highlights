@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>LoL Highlights</title>
@@ -8,72 +8,109 @@
 <body>
 <aside class="rail">
   <div class="logo">HL</div>
-  <button class="nav active" data-view="matches" title="Maçlar">
-    <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M4 9h16 M9 9v10"/></svg><span>Maçlar</span>
+  <button class="nav active" data-view="matches" title="Matches">
+    <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M4 9h16 M9 9v10"/></svg><span>Matches</span>
   </button>
-  <button class="nav" data-view="log" title="Günlük">
-    <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h5"/></svg><span>Günlük</span>
+  <button class="nav" data-view="replays" title="Replays">
+    <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7 M3 4v5h5"/><path d="M10 9l5 3-5 3z"/></svg><span>Replays</span>
   </button>
-  <button class="nav" data-view="settings" title="Ayarlar">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3 M12 19v3 M2 12h3 M19 12h3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M4.9 19.1L7 17 M17 7l2.1-2.1"/></svg><span>Ayarlar</span>
+  <button class="nav" data-view="live" title="Live">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4 M17.7 6.3a8 8 0 0 1 0 11.4"/></svg><span>Live</span>
+  </button>
+  <button class="nav" data-view="log" title="Log">
+    <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h5"/></svg><span>Log</span>
+  </button>
+  <button class="nav" data-view="settings" title="Settings">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3 M12 19v3 M2 12h3 M19 12h3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M4.9 19.1L7 17 M17 7l2.1-2.1"/></svg><span>Settings</span>
   </button>
 </aside>
 
 <main>
   <header class="topbar">
-    <div class="status" id="status"><span class="dot"></span><span id="status-text">Başlatılıyor...</span></div>
+    <div class="status" id="status"><span class="dot"></span><span id="status-text">Starting...</span></div>
     <div class="spacer"></div>
-    <button class="btn ghost" id="open-clips">Klasörü aç</button>
-    <button class="btn" id="toggle">Durdur</button>
+    <button class="btn ghost" id="open-clips">Open folder</button>
+    <button class="btn" id="toggle">Stop</button>
   </header>
   <div class="banner hidden" id="banner"></div>
 
   <!-- Maç listesi -->
   <section class="view" id="view-matches">
-    <div class="view-head"><h1>Maçlar</h1><span class="muted" id="match-count"></span></div>
+    <div class="view-head"><h1>Matches</h1><span class="muted" id="match-count"></span></div>
     <div class="grid" id="grid"></div>
     <div class="empty hidden" id="empty">
-      <h2>Henüz klip yok</h2>
-      <p>Bir maça gir; maç bitince kill ve ölüm anların burada görünecek.</p>
+      <h2>No clips yet</h2>
+      <p>Play a game; when it ends, your kills and deaths will show up here.</p>
     </div>
   </section>
 
   <!-- Maç detayı -->
   <section class="view hidden" id="view-match">
     <div class="view-head">
-      <button class="btn ghost" id="back">← Maçlar</button>
+      <button class="btn ghost" id="back">← Matches</button>
       <h1 id="m-title"></h1><span class="muted" id="m-sub"></span>
       <div class="spacer"></div>
-      <button class="btn ghost danger" id="m-delete">Maçı sil</button>
+      <button class="btn ghost danger" id="m-delete">Delete match</button>
     </div>
     <div class="match-layout">
       <div class="player-col">
         <div class="modes" id="modes">
-          <button class="mode on" data-mode="clips">Klipler</button>
-          <button class="mode" data-mode="full">Tam maç</button>
+          <button class="mode on" data-mode="clips">Clips</button>
+          <button class="mode" data-mode="full">Full match</button>
         </div>
-        <div class="player"><video id="video" controls autoplay></video></div>
-        <div class="markers hidden" id="markers" title="Olaya gitmek için tıkla"></div>
+        <div class="player">
+          <video id="video" controls autoplay></video><canvas id="draw-canvas"></canvas>
+          <div class="tm hidden" id="timers">
+            <div class="tm-bottom" id="tm-bottom"></div>
+            <div class="tm-camps" id="tm-camps"></div>
+          </div>
+        </div>
+        <div class="drawbar">
+          <button class="btn ghost" id="timer-toggle" title="Dragon, Baron and jungle timers (T)">⏱ Timers</button>
+          <button class="btn ghost" id="draw-toggle" title="Toggle drawing (D)">✎ Draw</button>
+          <div class="draw-tools hidden" id="draw-tools">
+            <div class="seg">
+              <button data-draw-tool="pen" class="on" title="Pen (1)">Pen</button>
+              <button data-draw-tool="arrow" title="Arrow (2)">Arrow</button>
+              <button data-draw-tool="circle" title="Circle (3)">Circle</button>
+            </div>
+            <div class="swatches" id="draw-colors"></div>
+            <select id="draw-width" title="Width">
+              <option value="4">Thin</option><option value="7" selected>Medium</option><option value="12">Thick</option>
+            </select>
+            <select id="draw-duration" title="How long it stays on screen">
+              <option value="2">Show 2 s</option><option value="4" selected>Show 4 s</option>
+              <option value="8">Show 8 s</option><option value="0">Until the end</option>
+            </select>
+            <button class="mini" id="draw-undo" title="Undo (Ctrl+Z)">Undo</button>
+            <button class="mini" id="draw-clear" title="Clear drawings at this moment (Delete)">Clear this moment</button>
+          </div>
+          <div class="spacer"></div>
+          <span class="muted" id="draw-status"></span>
+          <span class="muted" id="draw-count"></span>
+          <button class="btn ghost" id="draw-export" disabled title="Burns the drawings into the video and saves a new file">Save video with drawings</button>
+        </div>
+        <div class="markers hidden" id="markers" title="Click to jump to the event"></div>
         <div class="controls">
           <div class="speeds" id="speeds">
-            <span class="muted">Hız</span>
+            <span class="muted">Speed</span>
             <button data-r="0.25">0.25×</button><button data-r="0.5">0.5×</button>
             <button data-r="1" class="on">1×</button><button data-r="1.5">1.5×</button><button data-r="2">2×</button>
           </div>
           <div class="step">
-            <button id="back5" title="5 sn geri (←)">−5 sn</button>
-            <button id="prevf" title="Bir kare geri (,)">‹ kare</button>
-            <button id="nextf" title="Bir kare ileri (.)">kare ›</button>
-            <button id="fwd5" title="5 sn ileri (→)">+5 sn</button>
+            <button id="back5" title="Back 5 s (←)">−5 s</button>
+            <button id="prevf" title="Previous frame (,)">‹ frame</button>
+            <button id="nextf" title="Next frame (.)">frame ›</button>
+            <button id="fwd5" title="Forward 5 s (→)">+5 s</button>
           </div>
-          <span class="muted keys">Kısayollar: Boşluk oynat/durdur · ← → 5 sn · , . kare · [ ] hız</span>
+          <span class="muted keys">Shortcuts: Space play/pause · ← → 5 s · , . frame · [ ] speed · D draw · T timers</span>
         </div>
         <div class="now">
           <div><div class="now-title" id="now-title"></div><div class="muted" id="now-sub"></div></div>
           <div class="spacer"></div>
-          <label class="check clip-only"><input type="checkbox" id="autonext" checked> Otomatik sonraki</label>
-          <button class="btn ghost clip-only" id="c-show">Dosyayı göster</button>
-          <button class="btn ghost danger clip-only" id="c-delete">Klibi sil</button>
+          <label class="check clip-only"><input type="checkbox" id="autonext" checked> Autoplay next</label>
+          <button class="btn ghost clip-only" id="c-show">Show file</button>
+          <button class="btn ghost danger clip-only" id="c-delete">Delete clip</button>
         </div>
       </div>
       <div class="clip-col">
@@ -81,54 +118,194 @@
         <ol class="clips" id="clips"></ol>
       </div>
     </div>
+
+    <!-- Maç analizi: videonun altında, aşağı kaydırınca. Hepsi maç sonrası Riot verisi. -->
+    <section class="analysis hidden" id="analysis">
+      <div class="an-head">
+        <h2>Match analysis</h2>
+        <div class="seg" id="an-scope">
+          <button data-scope="me" class="on">Personal</button>
+          <button data-scope="team">Team</button>
+        </div>
+        <span class="muted" id="an-vs"></span>
+        <div class="spacer"></div>
+        <span class="muted small">Show:</span>
+        <div class="an-toggles" id="an-toggles"></div>
+      </div>
+      <div class="an-msg muted hidden" id="an-msg"></div>
+      <div id="an-body" class="hidden">
+        <div class="an-grid">
+          <div class="an-card"><h3>Gold difference</h3><div class="chart" id="ch-gold"></div></div>
+          <div class="an-card"><h3>CS (lane + jungle)</h3><div class="chart" id="ch-cs"></div></div>
+          <div class="an-card"><h3>Damage to champions</h3><div class="chart" id="ch-dmg"></div></div>
+          <div class="an-card" id="an-jungle-card"><h3>Jungle CS (junglers)</h3><div class="chart" id="ch-jungle"></div></div>
+          <div class="an-card">
+            <h3>Minimap <span class="muted small" id="an-minute-label"></span></h3>
+            <div class="an-map-wrap"><div id="an-map"></div></div>
+            <div class="an-map-ctl">
+              <input type="range" id="an-minute" min="0" max="1" step="1" value="0">
+              <label class="check"><input type="checkbox" id="an-follow" checked> Follow video</label>
+            </div>
+            <p class="muted small">Positions are recorded once per minute; kills and objectives within ±30 s are shown too.</p>
+          </div>
+          <div class="an-card">
+            <h3>Objectives</h3>
+            <table class="an-table" id="an-table"></table>
+          </div>
+          <div class="an-card wide"><h3>Damage share</h3><div id="an-share"></div></div>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- Tekrarlar -->
+  <section class="view hidden" id="view-replays">
+    <div class="view-head">
+      <h1>Replays</h1><span class="muted" id="r-client"></span>
+      <div class="spacer"></div>
+      <span class="muted" id="r-quota"></span>
+      <button class="btn ghost" id="r-refresh">Refresh</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Replay control</h2>
+        <span class="state-pill" id="rc-state">No replay open</span>
+      </div>
+      <div id="rc-setup"></div>
+      <div id="rc-controls" class="hidden">
+        <p class="muted small">The camera in the game window works just like in LoL: mouse, Space, F1–F5. These buttons control the same camera remotely.</p>
+        <div class="rc-row">
+          <div class="step">
+            <button id="rc-back">−10 s</button>
+            <button id="rc-play" class="wide">Play</button>
+            <button id="rc-fwd">+10 s</button>
+          </div>
+          <span class="rc-time" id="rc-time">00:00 / 00:00</span>
+          <div class="speeds" id="rc-speeds"><span class="muted">Speed</span></div>
+        </div>
+        <input type="range" id="rc-seek" class="rc-seek" min="0" max="1" step="0.1" value="0">
+        <div class="rc-grid">
+          <div>
+            <h3>Camera</h3>
+            <div class="chip-row" id="rc-presets"></div>
+            <div class="chip-row">
+              <label class="check"><input type="checkbox" id="rc-fog"> Fog of war</label>
+              <label class="check"><input type="checkbox" id="rc-ui"> HUD</label>
+            </div>
+          </div>
+          <div>
+            <h3>Follow player</h3>
+            <div class="teams"><div id="rc-blue"></div><div id="rc-red"></div></div>
+          </div>
+          <div>
+            <h3>Record clip</h3>
+            <button class="btn" id="rc-rec">Start recording</button>
+            <div class="muted small" id="rc-rec-state">Recorded with the game's own recorder; it lands in the list below, where you can open it and draw on it.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="sec">Match history <span class="muted small">Download, then Watch to open it in LoL</span></h2>
+    <div class="rlist" id="r-matches"></div>
+
+    <h2 class="sec">Replays on this PC <a class="link" id="r-open-replays">Open folder</a></h2>
+    <div class="rlist" id="r-local"></div>
+
+    <h2 class="sec">Recordings from replays <a class="link" id="r-open-clips">Open folder</a></h2>
+    <div class="rlist" id="r-clips"></div>
+  </section>
+
+  <!-- Canlı: şampiyon seçiminde rün/item önerisi, oyun yüklenirken 10 oyuncunun bilgisi -->
+  <section class="view hidden" id="view-live">
+    <div class="view-head">
+      <h1>Live</h1><span class="state-pill" id="lv-phase">Client closed</span>
+      <div class="spacer"></div>
+      <span class="muted small" id="lv-stats"></span>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Runes &amp; items</h2>
+        <span class="muted small" id="lv-pick-note">Your pick is picked up automatically in champion select. Suggestions are only given before the game starts.</span>
+      </div>
+      <div class="lv-pick-row">
+        <input id="lv-champ" list="lv-champs" placeholder="Champion" autocomplete="off" spellcheck="false">
+        <datalist id="lv-champs"></datalist>
+        <select id="lv-role">
+          <option value="">Main role</option><option value="TOP">Top</option><option value="JUNGLE">Jungle</option>
+          <option value="MIDDLE">Mid</option><option value="BOTTOM">ADC</option><option value="UTILITY">Support</option>
+        </select>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="lv-imp-runes" disabled>Import runes</button>
+        <button class="btn ghost" id="lv-imp-items" disabled>Import item set</button>
+      </div>
+      <div id="lv-suggest"><div class="r-empty">Pick a champion, or open champion select in the client.</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Players in game</h2>
+        <span class="muted small" id="lv-scout-note">Fills in when the loading screen starts.</span>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="lv-preview">Preview with my last match</button>
+      </div>
+      <div id="lv-scout"></div>
+    </div>
   </section>
 
   <!-- Günlük -->
   <section class="view hidden" id="view-log">
-    <div class="view-head"><h1>Günlük</h1></div>
+    <div class="view-head"><h1>Log</h1></div>
     <pre class="log" id="log"></pre>
   </section>
 
   <!-- Ayarlar -->
   <section class="view hidden" id="view-settings">
-    <div class="view-head"><h1>Ayarlar</h1></div>
+    <div class="view-head"><h1>Settings</h1></div>
     <form class="settings" id="settings">
       <fieldset>
-        <legend>Riot hesabı</legend>
-        <label>API anahtarı
+        <legend>Riot account</legend>
+        <label>API key
           <input name="api_key" spellcheck="false" autocomplete="off">
-          <small>Geliştirici anahtarı 24 saatte bir yenilenmeli: developer.riotgames.com</small>
+          <small>Development keys must be renewed every 24 hours: developer.riotgames.com</small>
         </label>
         <div class="row">
-          <label>Oyuncu adı<input name="game_name"></label>
+          <label>Game name<input name="game_name"></label>
           <label>Tag<input name="tag_line"></label>
         </div>
       </fieldset>
       <fieldset>
-        <legend>Hangi anlar klip olsun</legend>
-        <label class="check"><input type="checkbox" name="rule" value="my_kills"> Kill'lerim</label>
-        <label class="check"><input type="checkbox" name="rule" value="my_deaths"> Ölümlerim</label>
-        <label class="check"><input type="checkbox" name="rule" value="my_assists"> Asistlerim</label>
+        <legend>Which moments become clips</legend>
+        <label class="check"><input type="checkbox" name="rule" value="my_kills"> My kills</label>
+        <label class="check"><input type="checkbox" name="rule" value="my_deaths"> My deaths</label>
+        <label class="check"><input type="checkbox" name="rule" value="my_assists"> My assists</label>
       </fieldset>
       <fieldset>
-        <legend>Klip süresi (saniye)</legend>
+        <legend>Clip length (seconds)</legend>
         <div class="row">
-          <label>Olaydan önce<input name="pre" type="number" min="0" max="60" step="1"></label>
-          <label>Olaydan sonra<input name="post" type="number" min="0" max="60" step="1"></label>
-          <label>Ölümlerde önce<input name="death_pre" type="number" min="0" max="60" step="1"></label>
+          <label>Before the event<input name="pre" type="number" min="0" max="60" step="1"></label>
+          <label>After the event<input name="post" type="number" min="0" max="60" step="1"></label>
+          <label>Before deaths<input name="death_pre" type="number" min="0" max="60" step="1"></label>
         </div>
       </fieldset>
       <fieldset>
-        <legend>Depolama</legend>
-        <label>Saklanacak tam maç kaydı sayısı
+        <legend>Storage</legend>
+        <label>Full match recordings to keep
           <input name="keep_recordings" type="number" min="0" max="20" step="1">
-          <small>Klipler hep kalır; bu sadece tam maç videoları için. 0 = hiç saklama.</small>
+          <small>Clips are always kept; this only applies to full match videos. 0 = keep none.</small>
         </label>
       </fieldset>
-      <div class="actions"><button class="btn" type="submit">Kaydet</button><span class="muted" id="saved"></span></div>
+      <div class="actions"><button class="btn" type="submit">Save</button><span class="muted" id="saved"></span></div>
     </form>
   </section>
 </main>
+<script src="draw.js"></script>
 <script src="app.js"></script>
+<script src="analysis.js"></script>
+<script src="timers.js"></script>
+<script src="replays.js"></script>
+<script src="live.js"></script>
 </body>
 </html>

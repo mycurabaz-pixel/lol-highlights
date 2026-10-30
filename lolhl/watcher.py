@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .lcu import Lcu, live_game_time
+from .lcu import Lcu, live_game_time, live_skin
 from .pipeline import process
 from .recorder import ObsRecorder, ensure_obs
 from .riot_api import RiotApi
@@ -43,11 +43,11 @@ class Watcher:
         video = meta.get("video") or str(sidecar.with_suffix(".mp4"))
         try:
             process(self.api.load(meta["match_id"], self.puuid, timeout), video,
-                    meta["offset"], self.cfg, self.log)
+                    meta["offset"], self.cfg, self.log, skin=meta.get("skin"))
             meta["processed"] = True
         except Exception as e:  # watcher ölmesin
             meta["tries"] = meta.get("tries", 0) + 1
-            self.log(f"İşleme hatası ({meta['tries']}/{MAX_TRIES}): {e}")
+            self.log(f"Processing error ({meta['tries']}/{MAX_TRIES}): {e}")
         sidecar.write_text(json.dumps(meta))
 
     def process_pending(self) -> None:
@@ -58,7 +58,7 @@ class Watcher:
                 continue
             if not Path(meta.get("video") or sidecar.with_suffix(".mp4")).exists():
                 continue
-            self._set("processing", f"Bekleyen kayıt işleniyor: {sidecar.stem}")
+            self._set("processing", f"Processing pending recording: {sidecar.stem}")
             self.handle(sidecar, timeout=0)
 
     def cleanup(self) -> None:
@@ -73,16 +73,17 @@ class Watcher:
                 continue  # klipleri henüz çıkmadı, silme
             video = Path(meta.get("video") or sidecar.with_suffix(".mp4"))
             video.unlink(missing_ok=True)
+            video.with_name(video.name + ".notes.json").unlink(missing_ok=True)  # çizimleri
             sidecar.unlink()
-            self.log(f"Eski kayıt silindi: {video.name}")
+            self.log(f"Old recording deleted: {video.name}")
 
     def run(self) -> None:
         try:
             self._run()
-            self._set("stopped", "Durduruldu.")
+            self._set("stopped", "Stopped.")
         except Exception as e:
             self.error = str(e)
-            self._set("error", f"Hata: {e}")
+            self._set("error", f"Error: {e}")
 
     def _run(self) -> None:
         cfg = self.cfg
@@ -95,7 +96,7 @@ class Watcher:
 
         self.process_pending()
         self.cleanup()
-        self._set("waiting", "Maç bekleniyor...")
+        self._set("waiting", "Waiting for a match...")
         while not self._stop.is_set():
             phase = lcu.phase()
             if phase in ("ChampSelect", "GameStart", "InProgress"):
@@ -106,51 +107,54 @@ class Watcher:
                     rec = None  # OBS kapatılmış
                 if rec is None:
                     rec = ensure_obs(cfg["obs"])
-                    self.log("OBS hazır.")
+                    self.log("OBS ready.")
             if phase != "InProgress":
                 self._stop.wait(2)
                 continue
 
             game_id = lcu.game_id()
             rec.start()
-            self._set("recording", f"Maç başladı (gameId={game_id}), kayıt açık.")
+            self._set("recording", f"Match started (gameId={game_id}), recording.")
 
             # video_zamanı - oyun_zamanı farkını maç boyunca ölç. Yükleme ekranı
             # sırasında Live Client'ın saati oyun saatiyle uyuşmayabiliyor (bir maçta
             # 63 sn sapma görüldü), bu yüzden oyun saati 90 sn'yi geçtikten sonraki
             # örnekler esas alınır.
             samples: list[tuple[float, float]] = []
+            skin = None  # kart görseli için oynadığın skin (maç geçmişinde yok)
             while lcu.phase() == "InProgress" and not self._stop.is_set():
                 gt = live_game_time()
                 if gt is not None and gt > 0:
                     samples.append((gt, rec.elapsed() - gt))
+                    if skin is None:
+                        skin = live_skin(cfg["riot"]["game_name"], cfg["riot"]["tag_line"])
                 self._stop.wait(5)
 
             video = rec.stop()
             if not samples:
-                self._set("waiting", "Oyun saati okunamadı (remake/erken çıkış?), atlanıyor.")
+                self._set("waiting", "Could not read game time (remake/early exit?), skipping.")
                 continue
             settled = [o for gt, o in samples if gt >= 90] or [o for _, o in samples]
             offset = statistics.median(settled)
             spread = max(settled) - min(settled)
             if spread > 3:
-                self.log(f"Uyarı: saat farkı ölçümleri {spread:.1f} sn oynadı; klipler kayabilir.")
+                self.log(f"Warning: clock offset samples varied by {spread:.1f} s; clips may be shifted.")
             sidecar = Path(video).with_suffix(".json")
             sidecar.write_text(json.dumps({"match_id": self.api.match_id_from_game_id(game_id),
-                                           "offset": offset, "video": video,
+                                           "offset": offset, "video": video, "skin": skin,
                                            "samples": samples[:: max(1, len(samples) // 60)]}))
             if self._stop.is_set():
                 # maç ortasında durdurulduysa sonraki açılışta işlenir
-                self.log("Kayıt kaydedildi; klipler bir sonraki başlatmada çıkarılacak.")
+                self.log("Recording saved; clips will be cut on next start.")
                 break
 
-            self._set("processing", "Maç bitti, klipler hazırlanıyor...")
+            self._set("processing", "Match ended, preparing clips...")
             self.handle(sidecar, timeout=300)
             self.process_pending()
             self.cleanup()
-            self._set("waiting", "Maç bekleniyor...")
+            self._set("waiting", "Waiting for a match...")
 
 
 def run(cfg: dict) -> None:
-    print("Ctrl+C ile çık")
+    print("Press Ctrl+C to quit")
     Watcher(cfg).run()

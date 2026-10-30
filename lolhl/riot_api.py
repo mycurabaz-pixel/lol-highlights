@@ -1,7 +1,9 @@
 """Riot Web API (Account-V1, Match-V5) -> MatchData."""
 from __future__ import annotations
 
+import threading
 import time
+from collections import deque
 
 import requests
 
@@ -16,18 +18,59 @@ REGIONAL = {
 }
 
 
+class KeyExpired(RuntimeError):
+    pass
+
+
+class _Limiter:
+    """Geliştirici anahtarı sınırı: 20 istek/sn, 100 istek/2 dk. Aynı anahtarı kullanan
+    herkes (watcher, analiz, oyuncu bilgisi, istatistik toplayıcı) aynı sayacı paylaşır.
+    Arka plan işleri `reserve` kadar payı ön plana bırakır."""
+    WINDOWS = ((1.0, 18), (120.0, 92))
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.sent: deque[float] = deque()
+
+    def acquire(self, reserve: int = 0) -> None:
+        while True:
+            with self.lock:
+                now = time.time()
+                while self.sent and now - self.sent[0] > 120:
+                    self.sent.popleft()
+                wait = 0.0
+                for span, cap in self.WINDOWS:
+                    cap -= reserve if span > 1 else 0
+                    recent = [t for t in self.sent if now - t < span]
+                    if len(recent) >= cap:
+                        wait = max(wait, recent[len(recent) - cap] + span - now)
+                if wait <= 0:
+                    self.sent.append(now)
+                    return
+            time.sleep(min(wait, 5) + 0.05)
+
+
+_limiters: dict[str, _Limiter] = {}
+
+
 class RiotApi:
-    def __init__(self, api_key: str, platform: str):
+    def __init__(self, api_key: str, platform: str, reserve: int = 0):
         if not api_key or api_key.startswith("RGAPI-xxxx"):
-            raise ValueError("config.toml içinde geçerli bir riot.api_key gerekli.")
+            raise ValueError("A valid riot.api_key is required in config.toml.")
         self.platform = platform.upper()
         self.base = f"https://{REGIONAL[self.platform]}.api.riotgames.com"
+        self.pbase = f"https://{self.platform.lower()}.api.riotgames.com"  # League, Mastery
         self.s = requests.Session()
         self.s.headers["X-Riot-Token"] = api_key
+        self.limit = _limiters.setdefault(api_key, _Limiter())
+        self.reserve = reserve
 
-    def _get(self, path: str, retries: int = 5):
+    def _get(self, path: str, retries: int = 5, platform: bool = False):
         for _ in range(retries):
-            r = self.s.get(self.base + path, timeout=15)
+            self.limit.acquire(self.reserve)
+            r = self.s.get((self.pbase if platform else self.base) + path, timeout=15)
+            if r.status_code in (401, 403):
+                raise KeyExpired("Riot API key is invalid or expired; renew it in Settings.")
             if r.status_code == 429:
                 time.sleep(int(r.headers.get("Retry-After", 5)))
                 continue
@@ -35,12 +78,12 @@ class RiotApi:
                 return None
             r.raise_for_status()
             return r.json()
-        raise RuntimeError(f"Rate limit aşılamadı: {path}")
+        raise RuntimeError(f"Rate limit not cleared: {path}")
 
     def puuid(self, game_name: str, tag_line: str) -> str:
         d = self._get(f"/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}")
         if not d:
-            raise ValueError(f"Hesap bulunamadı: {game_name}#{tag_line}")
+            raise ValueError(f"Account not found: {game_name}#{tag_line}")
         return d["puuid"]
 
     def match_id_from_game_id(self, game_id: int) -> str:
@@ -59,14 +102,43 @@ class RiotApi:
             if time.time() + every > end:
                 break
             time.sleep(every)
-        raise TimeoutError(f"{match_id} API'de görünmedi")
+        raise TimeoutError(f"{match_id} did not show up in the API")
 
-    def load(self, match_id: str, puuid: str, timeout: float = 300) -> MatchData:
+    def fetch(self, match_id: str, timeout: float = 300) -> tuple[dict, dict]:
+        """Ham maç detayı + timeline (analiz için olduğu gibi saklanır)."""
         info = self.wait_for_match(match_id, timeout)
         tl = self._get(f"/lol/match/v5/matches/{match_id}/timeline")
         if tl is None:
-            raise RuntimeError(f"Timeline yok: {match_id}")
-        return parse(match_id, info, tl, puuid)
+            raise RuntimeError(f"No timeline: {match_id}")
+        return info, tl
+
+    def match(self, match_id: str) -> dict | None:
+        return self._get(f"/lol/match/v5/matches/{match_id}")
+
+    def match_ids(self, puuid: str, count: int = 20, queue: int | None = 420, kind: str = "") -> list[str]:
+        q = (f"&queue={queue}" if queue else "") + (f"&type={kind}" if kind else "")
+        return self._get(f"/lol/match/v5/matches/by-puuid/{puuid}/ids?count={count}{q}") or []
+
+    def account(self, game_name: str, tag_line: str) -> dict | None:
+        return self._get(f"/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}")
+
+    def league(self, puuid: str) -> list[dict]:
+        return self._get(f"/lol/league/v4/entries/by-puuid/{puuid}", platform=True) or []
+
+    def mastery(self, puuid: str, champion_id: int) -> dict | None:
+        return self._get(f"/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}/by-champion/{champion_id}",
+                         platform=True)
+
+    def apex_puuids(self, queue: str = "RANKED_SOLO_5x5") -> list[str]:
+        """Challenger + Grandmaster + Master oyuncuları (istatistik toplamak için)."""
+        out = []
+        for tier in ("challenger", "grandmaster", "master"):
+            d = self._get(f"/lol/league/v4/{tier}leagues/by-queue/{queue}", platform=True) or {}
+            out += [e["puuid"] for e in d.get("entries", []) if e.get("puuid")]
+        return out
+
+    def load(self, match_id: str, puuid: str, timeout: float = 300) -> MatchData:
+        return parse(match_id, *self.fetch(match_id, timeout), puuid)
 
 
 def parse(match_id: str, info: dict, timeline: dict, puuid: str) -> MatchData:
@@ -81,7 +153,7 @@ def parse(match_id: str, info: dict, timeline: dict, puuid: str) -> MatchData:
         )
     me = next((p for p in parts.values() if p.puuid == puuid), None)
     if me is None:
-        raise ValueError("Bu maçta senin puuid'in yok")
+        raise ValueError("Your puuid is not in this match")
 
     events = []
     for frame in timeline["info"]["frames"]:
@@ -96,4 +168,4 @@ def parse(match_id: str, info: dict, timeline: dict, puuid: str) -> MatchData:
                 position=(pos["x"], pos["y"]) if pos else None,
                 raw=e,
             ))
-    return MatchData(match_id, parts, events, me)
+    return MatchData(match_id, parts, events, me, info=info, timeline=timeline)

@@ -34,6 +34,9 @@ class MatchData:
     participants: dict[int, Participant]
     events: list[GameEvent]
     me: Participant
+    # Riot'tan gelen ham veri; maç klasörüne kaydedilir, analiz bundan üretilir
+    info: dict = field(default_factory=dict, repr=False)
+    timeline: dict = field(default_factory=dict, repr=False)
 
     def teammates(self) -> list[Participant]:
         return [p for p in self.participants.values()
