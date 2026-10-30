@@ -403,3 +403,6 @@ b.good { color: var(--kill); }
 b.bad { color: var(--death); }
 @media (max-width: 1150px) { .lv-grid { grid-template-columns: 1fr; } }
 .lv-queue { margin: 0 6px 0 0; }
+.lv-page { cursor: pointer; }
+.lv-page:hover { border-color: var(--muted); }
+.lv-page.best:hover { border-color: var(--accent); }

@@ -491,26 +491,34 @@ class Api:
     def _title(self, s: dict) -> str:
         return f"{PREFIX}{s['champion_name']} {s['role_name']}".strip()
 
-    def import_runes(self, champion_id: int, role: str = ""):
-        """En çok kullanılan rün sayfasını client'a ekler. Yalnızca kendi açtığımız
-        "LoL HL" sayfalarını siler; senin sayfalarına dokunmaz."""
+    def import_runes(self, champion_id: int, role: str = "", index: int = 0):
+        """Seçilen rün sayfasını (öneri listesindeki sırası) client'a yazar. Önce uygulamanın
+        kendi "LoL HL" sayfasını günceller; yoksa yeni sayfa açar; yer yoksa açık olan (ya da
+        ilk) düzenlenebilir sayfanın üstüne yazar."""
         s = self.suggest(champion_id, role)
         if not s["runes"]:
             raise RuntimeError("No rune data for this champion yet")
-        page = s["runes"][0]
+        page = s["runes"][min(max(int(index), 0), len(s["runes"]) - 1)]
         pages = self._lcu.get("/lol-perks/v1/pages")
         if pages is None:
             raise RuntimeError("LoL client is not open")
-        for p in pages:
-            if p.get("name", "").startswith(PREFIX) and p.get("isDeletable"):
-                self._lcu.call("DELETE", f"/lol-perks/v1/pages/{p['id']}")
-        r = self._lcu.call("POST", "/lol-perks/v1/pages", {
-            "name": self._title(s), "primaryStyleId": page["primary"], "subStyleId": page["sub"],
-            "selectedPerkIds": page["perks"] + page["shards"], "current": True})
+        body = {"name": self._title(s), "primaryStyleId": page["primary"], "subStyleId": page["sub"],
+                "selectedPerkIds": page["perks"] + page["shards"], "current": True}
+        editable = [p for p in pages if p.get("isEditable")]
+        ours = next((p for p in editable if p.get("name", "").startswith(PREFIX)), None)
+        can_add = (self._lcu.get("/lol-perks/v1/inventory") or {}).get("canAddCustomPage", True)
+        target = ours or (None if can_add else next((p for p in editable if p.get("current")), None)
+                          or (editable[0] if editable else None))
+        if target:
+            r = self._lcu.call("PUT", f"/lol-perks/v1/pages/{target['id']}", {**target, **body})
+            if r is not None and r.ok:
+                self._lcu.call("PUT", "/lol-perks/v1/currentpage", target["id"])
+        else:
+            r = self._lcu.call("POST", "/lol-perks/v1/pages", body)
         if r is None or not r.ok:
-            raise RuntimeError("No free rune page. Delete one in the client, or rename one so it starts "
-                               f"with '{PREFIX.strip()}' and the app will replace it.")
-        return self._title(s)
+            raise RuntimeError(f"Client refused the rune page ({r.status_code if r is not None else 'closed'})")
+        replaced = target and target is not ours
+        return f"{body['name']}" + (f" (replaced your page \"{target.get('name', '')}\")" if replaced else "")
 
     def import_items(self, champion_id: int, role: str = ""):
         """Önerilen item yolunu client'a item seti olarak ekler (mağazada önerilenlerin yanında)."""

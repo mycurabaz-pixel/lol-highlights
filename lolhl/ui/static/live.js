@@ -18,6 +18,7 @@ const Live = (() => {
   let shown = null;       // ekrandaki öneri: "champId|role"
   let pickedAuto = null;  // şampiyon seçiminden gelen son seçim
   let current = null;     // gösterilen öneri
+  let pageIndex = 0;      // aktarılacak rün sayfası (listeden tıklanarak seçilir)
 
   const cdn = (path) => `https://ddragon.leagueoflegends.com/cdn/${path}`;
   const champImg = (key) => cdn(`${ver}/img/champion/${key}.png`);
@@ -72,6 +73,7 @@ const Live = (() => {
       const s = await api.suggest(c.id, role);
       if (shown !== `${c.id}|${role}`) return;
       current = s;
+      pageIndex = 0;
       renderSuggest(s);
     } catch (e) { el("lv-suggest").innerHTML = `<div class="r-empty">${esc(String(e))}</div>`; }
   }
@@ -89,7 +91,8 @@ const Live = (() => {
       <b>${esc(s.champion_name)} ${esc(s.role_name)}</b>
       <div class="muted small">${s.games} high-elo games · ${s.scope === "all patches" ? "all patches" : `patch ${esc(s.scope)}`} · ${pct(s.wr)} win rate
       ${s.enough ? "" : ` · <span class="warn">few games, take it with a grain of salt</span>`}</div></div></div>`;
-    const pages = s.runes.map((p, i) => `<div class="lv-page ${i ? "" : "best"}">
+    const pages = s.runes.map((p, i) => `<div class="lv-page ${i === pageIndex ? "best" : ""}" data-page="${i}"
+      title="Click to choose this page, then Import runes">
       <div class="lv-runes">
         <img class="tree" src="${runeImg(p.tree_icons[0])}" title="${esc(p.tree_names[0])}" alt="">
         ${p.icons.slice(0, 4).map((ic, j) => `<img src="${runeImg(ic)}" title="${esc(p.names[j])}" alt="">`).join("")}
@@ -106,7 +109,7 @@ const Live = (() => {
       ${list.map((it) => `<div class="lv-item" title="${esc(it.name)} · ${it.games} games">
         <img src="${itemImg(it.id)}" alt=""><span>${pct(it.pick)}</span><span class="muted">${pct(it.wr)}</span></div>`).join("")}
       </div></div>` : "";
-    el("lv-suggest").innerHTML = head + `<div class="lv-grid"><div><h3 class="lv-h">Rune pages</h3>${pages}</div>
+    el("lv-suggest").innerHTML = head + `<div class="lv-grid"><div><h3 class="lv-h">Rune pages <span class="muted small">click one to choose what Import runes copies</span></h3>${pages}</div>
       <div><h3 class="lv-h">Items <span class="muted small">pick rate / win rate</span></h3>
       ${items("Core", s.core)}${items("Boots", s.boots)}${items("Situational", s.situational)}</div></div>`;
   }
@@ -117,7 +120,7 @@ const Live = (() => {
     const was = btn.textContent;
     btn.disabled = true;
     try {
-      const title = kind === "runes" ? await api.import_runes(current.champion_id, current.role)
+      const title = kind === "runes" ? await api.import_runes(current.champion_id, current.role, pageIndex)
         : await api.import_items(current.champion_id, current.role);
       el("lv-pick-note").textContent = `Added to the client: "${title}"`;
     } catch (e) { el("lv-pick-note").textContent = String(e).replace(/^Error: /, ""); }
@@ -186,6 +189,12 @@ const Live = (() => {
   el("lv-champ").addEventListener("change", load);
   el("lv-role").addEventListener("change", load);
   el("lv-imp-runes").onclick = () => doImport("runes");
+  el("lv-suggest").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-page]");
+    if (!row) return;
+    pageIndex = +row.dataset.page;
+    el("lv-suggest").querySelectorAll("[data-page]").forEach((r) => r.classList.toggle("best", r === row));
+  });
   el("lv-imp-items").onclick = () => doImport("items");
   el("lv-preview").onclick = async () => {
     el("lv-scout-note").textContent = "Loading your last match...";
