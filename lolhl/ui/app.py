@@ -439,9 +439,10 @@ class Api:
             if cid:
                 role = POSITIONS.get(me.get("assignedPosition") or "", "")
                 # rakip takımın şampiyonları seçimde herkese görünür (isimleri değil); koridor
-                # rakibi, istatistikte en çok bizim rolde oynanan rakip şampiyon sayılır
+                # rakibi, rakip şampiyonlar rollere birlikte dağıtılarak bulunur
                 enemies = [p["championId"] for p in s.get("theirTeam", []) if p.get("championId")]
-                guess = next((e for e in enemies if role and stats.main_role(e) == role), None)
+                roles = stats.assign_roles(enemies) if role else {}
+                guess = next((e for e, r in roles.items() if r == role), None)
                 out["pick"] = {"champion_id": cid, "role": role, "locked": bool(me.get("championId")),
                                "enemies": enemies, "opponent": guess}
         if phase in ("InProgress", "Reconnect") and (not self._scout or self._scout.source != "live"):

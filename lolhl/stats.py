@@ -10,6 +10,7 @@ verilir; oyun sırasında öneri yoktur.
 from __future__ import annotations
 
 import json
+import math
 import random
 import sqlite3
 import threading
@@ -168,6 +169,30 @@ def main_role(champion: int) -> str:
     return r[0] if r else ""
 
 
+def assign_roles(champions: list[int]) -> dict[int, str]:
+    """Rakip takımın şampiyonlarını rollere en olası şekilde dağıtır (her rol bir kişi).
+    Tek tek "en çok oynandığı rol"e bakmak yanılır: Yone en çok Top'ta oynanır ama
+    takımda başka bir Top varsa Mid'dir. Veride hiç görülmeyen eşleşmelere küçük pay verilir."""
+    from itertools import permutations
+    champions = champions[:5]
+    if not champions:
+        return {}
+    q = ",".join("?" * len(champions))
+    with _db() as c:
+        rows = c.execute(f"SELECT p.champion, p.role, COUNT(*) FROM parts p JOIN matches m ON m.id=p.match_id "
+                         f"WHERE m.source='apex' AND p.role!='' AND p.champion IN ({q}) GROUP BY 1, 2",
+                         champions).fetchall()
+    counts = defaultdict(lambda: defaultdict(int))
+    for ch, role, n in rows:
+        counts[ch][role] = n
+    def prob(ch: int, role: str) -> float:
+        total = sum(counts[ch].values())
+        return (counts[ch][role] + 0.5) / (total + 0.5 * len(ROLES))
+    best = max(permutations(ROLES, len(champions)),
+               key=lambda roles: math.prod(prob(ch, r) for ch, r in zip(champions, roles)))
+    return dict(zip(champions, best))
+
+
 def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
     """Şampiyon (+ rol) için en çok kullanılan rün sayfaları ve item yolu. Son yamada
     yeterli veri yoksa tüm yamalara bakılır. `opponent` verilirse ayrıca yalnızca o rakibe
@@ -259,3 +284,88 @@ def _aggregate(data: list[tuple], enough: int) -> dict:
         "boots": [{**item(kv), "pick": wr(kv[1][0], boot_games)} for kv in rank(boots)[:2]],
         "situational": [item(kv) for kv in rank(legend)[3:9]],
     }
+
+
+class Collector:
+    """Arka planda Master+ maçlarını (timeline'larıyla) toplar: her bölgesel küme (europe:
+    TR+EUW, asia: KR) kendi iş parçacığında, kendi istek sınırıyla. Anahtar geçersizse bekler,
+    uygulama kapanınca durur. Oyuncu bilgisi yüklenirken aynı kümedeki toplayıcı bekler."""
+
+    def __init__(self, cfg: dict, log):
+        self.cfg, self.log = cfg, log
+        self.states = {c: "idle" for c in CLUSTERS}
+        self.added = 0
+        self._stop = threading.Event()
+        self._cond = threading.Condition()
+
+    @property
+    def state(self) -> str:
+        st = list(self.states.values())
+        if "collecting" in st:
+            return "collecting"
+        return next((x for x in st if x != "idle"), "idle")
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._cond:
+            self._cond.notify_all()
+
+    def update(self, cfg: dict) -> None:
+        """Ayarlar (ör. yeni API anahtarı) kaydedilince beklemeden devam et."""
+        self.cfg = cfg
+        with self._cond:
+            self._cond.notify_all()
+
+    def _wait(self, seconds: float) -> None:
+        with self._cond:
+            self._cond.wait(seconds)
+
+    def run(self) -> None:
+        workers = [threading.Thread(target=self._work, args=(c,), daemon=True) for c in CLUSTERS]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+
+    def _work(self, cluster: str) -> None:
+        platforms = CLUSTERS[cluster]
+        players: list[tuple[str, str]] = []  # (platform, puuid)
+        refreshed = 0.0
+        while not self._stop.is_set():
+            try:
+                key = self.cfg["riot"]["api_key"]
+                home = _cluster_of(self.cfg["riot"]["platform"])
+                if time.time() - refreshed > 3600 or not players:
+                    players = [(pf, pu) for pf in platforms for pu in RiotApi(key, pf, reserve=35).apex_puuids()]
+                    random.shuffle(players)
+                    refreshed = time.time()
+                    if not players:
+                        self.states[cluster] = "no players"
+                        self._wait(600)
+                        continue
+                if SCOUTING.is_set() and cluster == home:
+                    self.states[cluster] = "paused for player info"
+                    self._wait(5)
+                    continue
+                self.states[cluster] = "collecting"
+                platform, puuid = players.pop()
+                api = RiotApi(key, platform, reserve=35)  # 35 isteği ön plana bırak
+                ids = api.match_ids(puuid, count=10)
+                for mid in [m for m in ids if m not in known(ids)]:
+                    if self._stop.is_set():
+                        return
+                    if SCOUTING.is_set() and cluster == home:
+                        break
+                    if (info := api.match(mid)):
+                        store(info, "apex", api.timeline(mid))
+                        self.added += 1
+                        if self.added % 200 == 0:
+                            sm = summary()
+                            self.log(f"Stats: {sm['matches']} high-elo matches collected "
+                                     f"({', '.join(f'{k} {v}' for k, v in sm['regions'].items())})")
+            except KeyExpired:
+                self.states[cluster] = "key expired"
+                self._wait(600)
+            except Exception as e:  # ağ hatası vb.; toplayıcı ölmesin
+                self.states[cluster] = f"error: {e}"
+                self._wait(60)
