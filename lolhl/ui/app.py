@@ -437,8 +437,13 @@ class Api:
             me = next((p for p in s.get("myTeam", []) if p.get("cellId") == s.get("localPlayerCellId")), None)
             cid = me and (me.get("championId") or me.get("championPickIntent"))
             if cid:
-                out["pick"] = {"champion_id": cid, "role": POSITIONS.get(me.get("assignedPosition") or "", ""),
-                               "locked": bool(me.get("championId"))}
+                role = POSITIONS.get(me.get("assignedPosition") or "", "")
+                # rakip takımın şampiyonları seçimde herkese görünür (isimleri değil); koridor
+                # rakibi, istatistikte en çok bizim rolde oynanan rakip şampiyon sayılır
+                enemies = [p["championId"] for p in s.get("theirTeam", []) if p.get("championId")]
+                guess = next((e for e in enemies if role and stats.main_role(e) == role), None)
+                out["pick"] = {"champion_id": cid, "role": role, "locked": bool(me.get("championId")),
+                               "enemies": enemies, "opponent": guess}
         if phase in ("InProgress", "Reconnect") and (not self._scout or self._scout.source != "live"):
             players = scout.live_players(self._lcu, self._riot())
             if players:
@@ -465,8 +470,22 @@ class Api:
         stats.store(info, "scout")
         self._start_scout(scout.match_players(info, self._puuid), "preview")
 
-    def suggest(self, champion_id: int, role: str = ""):
-        s = stats.suggest(int(champion_id), role)
+    def suggest(self, champion_id: int, role: str = "", opponent_id: int | None = None):
+        """Genel öneri; `opponent_id` verilirse ayrıca `matchup` (yalnızca o rakibe karşı)."""
+        s = stats.suggest(int(champion_id), role, int(opponent_id) if opponent_id else None)
+        champs = ddragon.champions()
+        self._names(s)
+        if s["matchup"]:
+            self._names(s["matchup"])
+            o = champs.get(int(opponent_id), {})
+            s["matchup"].update(champion=o.get("id", ""), champion_name=o.get("name", ""))
+        c = champs.get(int(champion_id), {})
+        return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
+                "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
+
+    @staticmethod
+    def _names(s: dict) -> None:
+        """Rün ve item kimliklerine ad ve görsel ekler."""
         names = ddragon.runes()
         items = ddragon.items()
         for page in s["runes"]:
@@ -484,29 +503,35 @@ class Api:
             for g in s[key]:
                 for it in g["items"]:
                     it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
-        c = ddragon.champions().get(int(champion_id), {})
-        return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
-                "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
 
     def champions(self):
         return sorted(({"id": k, "key": v["id"], "name": v["name"]} for k, v in ddragon.champions().items()),
                       key=lambda c: c["name"])
 
-    def _title(self, s: dict) -> str:
-        return f"{PREFIX}{s['champion_name']} {s['role_name']}".strip()
+    def _title(self, s: dict, vs: bool = False) -> str:
+        t = f"{PREFIX}{s['champion_name']} {s['role_name']}".strip()
+        return f"{t} vs {s['matchup']['champion_name']}" if vs else t
 
-    def import_runes(self, champion_id: int, role: str = "", index: int = 0):
-        """Seçilen rün sayfasını (öneri listesindeki sırası) client'a yazar. Önce uygulamanın
-        kendi "LoL HL" sayfasını günceller; yoksa yeni sayfa açar; yer yoksa açık olan (ya da
-        ilk) düzenlenebilir sayfanın üstüne yazar."""
-        s = self.suggest(champion_id, role)
-        if not s["runes"]:
+    def _pick(self, champion_id: int, role: str, opponent_id: int | None) -> tuple[dict, dict, bool]:
+        """(tam öneri, kullanılacak kısım, eşleşme mi). Rakip verildiyse ve eşleşme verisi varsa o."""
+        s = self.suggest(champion_id, role, opponent_id)
+        m = s["matchup"]
+        if opponent_id and m and m["games"]:
+            return s, m, True
+        return s, s, False
+
+    def import_runes(self, champion_id: int, role: str = "", index: int = 0, opponent_id: int | None = None):
+        """Seçilen rün sayfasını (öneri listesindeki sırası) client'a yazar; `opponent_id`
+        verilirse eşleşme önerisinden. Önce uygulamanın kendi "LoL HL" sayfasını günceller;
+        yoksa yeni sayfa açar; yer yoksa açık olan (ya da ilk) düzenlenebilir sayfanın üstüne yazar."""
+        s, src, vs = self._pick(champion_id, role, opponent_id)
+        if not src["runes"]:
             raise RuntimeError("No rune data for this champion yet")
-        page = s["runes"][min(max(int(index), 0), len(s["runes"]) - 1)]
+        page = src["runes"][min(max(int(index), 0), len(src["runes"]) - 1)]
         pages = self._lcu.get("/lol-perks/v1/pages")
         if pages is None:
             raise RuntimeError("LoL client is not open")
-        body = {"name": self._title(s), "primaryStyleId": page["primary"], "subStyleId": page["sub"],
+        body = {"name": self._title(s, vs), "primaryStyleId": page["primary"], "subStyleId": page["sub"],
                 "selectedPerkIds": page["perks"] + page["shards"], "current": True}
         editable = [p for p in pages if p.get("isEditable")]
         ours = next((p for p in editable if p.get("name", "").startswith(PREFIX)), None)
@@ -524,10 +549,11 @@ class Api:
         replaced = target and target is not ours
         return f"{body['name']}" + (f" (replaced your page \"{target.get('name', '')}\")" if replaced else "")
 
-    def import_items(self, champion_id: int, role: str = ""):
-        """Önerilen item yolunu client'a item seti olarak ekler (mağazada önerilenlerin yanında)."""
-        s = self.suggest(champion_id, role)
-        if not s["core"]:
+    def import_items(self, champion_id: int, role: str = "", opponent_id: int | None = None):
+        """Önerilen item yolunu client'a item seti olarak ekler (mağazada önerilenlerin yanında);
+        `opponent_id` verilirse eşleşme önerisinden."""
+        s, src, vs = self._pick(champion_id, role, opponent_id)
+        if not src["core"]:
             raise RuntimeError("No item data for this champion yet")
         me = self._lcu.get("/lol-summoner/v1/current-summoner")
         if not me:
@@ -536,21 +562,22 @@ class Api:
         data = self._lcu.get(path) or {"accountId": me.get("accountId"), "itemSets": []}
         blk = lambda name, its: {"type": name, "items": [{"id": str(i["id"]), "count": i.get("count", 1)} for i in its]}  # noqa: E731
         # timeline verisi varsa: en sık başlangıç seti ve en sık item sırası; yoksa en çok yapılanlar
-        start = [blk("Starting items", s["start"][0]["items"])] if s["start"] else []
-        core = blk("Build order", s["order"][0]["items"]) if s["order"] else             blk(f"Core ({s['games']} high-elo games)", s["core"])
+        start = [blk("Starting items", src["start"][0]["items"])] if src["start"] else []
+        core = (blk("Build order", src["order"][0]["items"]) if src["order"]
+                else blk(f"Core ({src['games']} high-elo games)", src["core"]))
         # aynı şampiyon için önceki setimizi değiştir, diğer setlere dokunma
         data["itemSets"] = [x for x in data.get("itemSets", []) if not x.get("title", "").startswith(PREFIX)
                             or int(champion_id) not in x.get("associatedChampions", [])]
         data["itemSets"].append({
-            "title": self._title(s), "type": "custom", "map": "any", "mode": "any", "uid": str(uuid.uuid4()),
+            "title": self._title(s, vs), "type": "custom", "map": "any", "mode": "any", "uid": str(uuid.uuid4()),
             "associatedChampions": [int(champion_id)], "associatedMaps": [11], "sortrank": 0,
             "startedFrom": "blank", "preferredItemSlots": [],
-            "blocks": [*start, core, blk("Boots", s["boots"]), blk("Situational", s["situational"])],
+            "blocks": [*start, core, blk("Boots", src["boots"]), blk("Situational", src["situational"])],
         })
         r = self._lcu.call("PUT", path, data)
         if r is None or not r.ok:
             raise RuntimeError(f"Client refused the item set ({r.status_code if r is not None else 'closed'})")
-        return self._title(s)
+        return self._title(s, vs)
 
     # --- ayarlar ---
     def settings(self):

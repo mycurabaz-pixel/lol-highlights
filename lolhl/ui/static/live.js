@@ -19,6 +19,9 @@ const Live = (() => {
   let pickedAuto = null;  // şampiyon seçiminden gelen son seçim
   let current = null;     // gösterilen öneri
   let pageIndex = 0;      // aktarılacak rün sayfası (listeden tıklanarak seçilir)
+  let tab = "general";    // "general" ya da "matchup" (rakibe özel öneri)
+  let oppManual = false;  // rakip elle girildiyse şampiyon seçimindeki tahmin üstüne yazmaz
+  let enemies = [];       // şampiyon seçiminde rakip takımın kilitlediği şampiyonlar
 
   const cdn = (path) => `https://ddragon.leagueoflegends.com/cdn/${path}`;
   const champImg = (key) => cdn(`${ver}/img/champion/${key}.png`);
@@ -51,12 +54,18 @@ const Live = (() => {
     el("lv-stats").textContent = `Stats: ${st.matches} high-elo matches${regions ? ` (${regions})` : ""}${st.patch ? `, ${st.patch_matches} on patch ${st.patch}` : ""} · ${COLLECTOR[st.collector] || st.collector}`;
     // şampiyon seçimindeki seçimi otomatik göster (kullanıcı elle başka şampiyon seçmediyse)
     if (s.pick) {
-      const k = `${s.pick.champion_id}|${s.pick.role}`;
+      if (String(s.pick.enemies) !== String(enemies)) { enemies = s.pick.enemies || []; renderEnemies(); }
+      const k = `${s.pick.champion_id}|${s.pick.role}|${oppManual ? "" : s.pick.opponent || ""}`;
       if (k !== pickedAuto) {
         pickedAuto = k;
         const c = champs.find((x) => x.id === s.pick.champion_id);
         if (c) el("lv-champ").value = c.name;
         el("lv-role").value = s.pick.role;
+        if (!oppManual) {
+          const o = champs.find((x) => x.id === s.pick.opponent);
+          el("lv-vs").value = o ? o.name : "";
+          if (o) tab = "matchup";
+        }
         load();
       }
     }
@@ -64,32 +73,54 @@ const Live = (() => {
   }
 
   // ---------- öneri ----------
+  const byName = (input) => champs.find((x) => x.name.toLowerCase() === el(input).value.trim().toLowerCase());
+
   async function load() {
-    const c = champs.find((x) => x.name.toLowerCase() === el("lv-champ").value.trim().toLowerCase());
+    const c = byName("lv-champ");
     if (!c) return;
     const role = el("lv-role").value;
-    shown = `${c.id}|${role}`;
+    const opp = byName("lv-vs");
+    if (!opp) tab = "general";
+    const key = `${c.id}|${role}|${opp ? opp.id : ""}`;
+    shown = key;
     el("lv-suggest").innerHTML = `<div class="r-empty">Loading...</div>`;
     try {
-      const s = await api.suggest(c.id, role);
-      if (shown !== `${c.id}|${role}`) return;
+      const s = await api.suggest(c.id, role, opp ? opp.id : null);
+      if (shown !== key) return;
       current = s;
       pageIndex = 0;
       renderSuggest(s);
     } catch (e) { el("lv-suggest").innerHTML = `<div class="r-empty">${esc(String(e))}</div>`; }
   }
 
-  function renderSuggest(s) {
-    const ok = s.runes.length > 0;
-    el("lv-imp-runes").disabled = !ok;
+  // şampiyon seçiminde rakip takımın şampiyonları; tıklayınca rakip olarak seçilir
+  function renderEnemies() {
+    el("lv-enemies").innerHTML = enemies.length ? `<span class="muted small">Enemy picks:</span>` + enemies.map((id) => {
+      const c = champs.find((x) => x.id === id);
+      return c ? `<button class="chip lv-enemy" data-enemy="${id}" title="Use as opponent"><img src="${champImg(c.key)}" alt="">${esc(c.name)}</button>` : "";
+    }).join("") : "";
+  }
+
+  // Genel öneri ile rakibe özel öneri arasında sekme; içe aktarma açık sekmeden yapılır
+  function renderSuggest(full) {
+    const m = full.matchup;
+    if (!m) tab = "general";
+    const tabs = m ? `<div class="chip-row lv-tabs">
+      <button class="chip ${tab === "general" ? "on" : ""}" data-tab="general">General · ${full.games} games</button>
+      <button class="chip ${tab === "matchup" ? "on" : ""}" data-tab="matchup">vs ${esc(m.champion_name)} · ${m.games} games</button></div>` : "";
+    const s = tab === "matchup" ? m : full;
+    el("lv-imp-runes").disabled = !s.runes.length;
     el("lv-imp-items").disabled = !s.core.length;
+    const title = `${esc(full.champion_name)} ${esc(full.role_name)}${tab === "matchup" ? ` vs ${esc(m.champion_name)}` : ""}`;
     if (!s.games) {
-      el("lv-suggest").innerHTML = `<div class="r-empty">No high-elo games for ${esc(s.champion_name)} ${esc(s.role_name)} yet.
-        The collector keeps adding matches while the app is open.</div>`;
+      el("lv-suggest").innerHTML = tabs + `<div class="r-empty">${tab === "matchup"
+        ? `No high-elo games of ${title} yet. Matchups fill slower than champions; the General tab still works.`
+        : `No high-elo games for ${title} yet. The collector keeps adding matches while the app is open.`}</div>`;
       return;
     }
-    const head = `<div class="lv-head"><img src="${champImg(s.champion)}" alt=""><div>
-      <b>${esc(s.champion_name)} ${esc(s.role_name)}</b>
+    const head = tabs + `<div class="lv-head"><img src="${champImg(full.champion)}" alt="">
+      ${tab === "matchup" ? `<span class="lv-vs-sep">vs</span><img src="${champImg(m.champion)}" alt="">` : ""}<div>
+      <b>${title}</b>
       <div class="muted small">${s.games} high-elo games · ${s.scope === "all patches" ? "all patches" : `patch ${esc(s.scope)}`} · ${pct(s.wr)} win rate
       ${s.enough ? "" : ` · <span class="warn">few games, take it with a grain of salt</span>`}</div></div></div>`;
     const pages = s.runes.map((p, i) => `<div class="lv-page ${i === pageIndex ? "best" : ""}" data-page="${i}"
@@ -130,8 +161,9 @@ const Live = (() => {
     const was = btn.textContent;
     btn.disabled = true;
     try {
-      const title = kind === "runes" ? await api.import_runes(current.champion_id, current.role, pageIndex)
-        : await api.import_items(current.champion_id, current.role);
+      const opp = tab === "matchup" && current.matchup ? current.matchup.opponent : null;
+      const title = kind === "runes" ? await api.import_runes(current.champion_id, current.role, pageIndex, opp)
+        : await api.import_items(current.champion_id, current.role, opp);
       el("lv-pick-note").textContent = `Added to the client: "${title}"`;
     } catch (e) { el("lv-pick-note").textContent = String(e).replace(/^Error: /, ""); }
     btn.textContent = was;
@@ -198,8 +230,28 @@ const Live = (() => {
   });
   el("lv-champ").addEventListener("change", load);
   el("lv-role").addEventListener("change", load);
+  el("lv-vs").addEventListener("change", () => {
+    oppManual = !!el("lv-vs").value.trim();
+    if (byName("lv-vs")) tab = "matchup";
+    load();
+  });
+  el("lv-enemies").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-enemy]");
+    if (!b) return;
+    el("lv-vs").value = champs.find((x) => x.id === +b.dataset.enemy)?.name || "";
+    oppManual = true;
+    tab = "matchup";
+    load();
+  });
   el("lv-imp-runes").onclick = () => doImport("runes");
   el("lv-suggest").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-tab]");
+    if (t && current) {
+      tab = t.dataset.tab;
+      pageIndex = 0;
+      renderSuggest(current);
+      return;
+    }
     const row = e.target.closest("[data-page]");
     if (!row) return;
     pageIndex = +row.dataset.page;

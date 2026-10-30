@@ -237,10 +237,13 @@
           <option value="">Main role</option><option value="TOP">Top</option><option value="JUNGLE">Jungle</option>
           <option value="MIDDLE">Mid</option><option value="BOTTOM">ADC</option><option value="UTILITY">Support</option>
         </select>
+        <span class="muted">vs</span>
+        <input id="lv-vs" list="lv-champs" placeholder="Opponent (optional)" autocomplete="off" spellcheck="false">
         <div class="spacer"></div>
         <button class="btn ghost" id="lv-imp-runes" disabled>Import runes</button>
         <button class="btn ghost" id="lv-imp-items" disabled>Import item set</button>
       </div>
+      <div class="chip-row lv-enemies" id="lv-enemies"></div>
       <div id="lv-suggest"><div class="r-empty">Pick a champion, or open champion select in the client.</div></div>
     </div>
 

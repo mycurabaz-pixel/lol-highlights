@@ -417,3 +417,9 @@ b.bad { color: var(--death); }
 .lv-gi b { position: absolute; right: -3px; bottom: -3px; font-size: 10.5px; background: var(--panel-2); border-radius: 4px; padding: 0 3px; }
 .lv-arrow { color: var(--muted); font-size: 16px; margin: 0 2px; }
 .lv-note { margin: -4px 0 12px; }
+.lv-enemies { align-items: center; margin: -6px 0 12px; }
+.lv-enemies:empty { display: none; }
+.lv-enemy { display: inline-flex; align-items: center; gap: 6px; }
+.lv-enemy img { width: 18px; height: 18px; border-radius: 4px; }
+.lv-tabs { margin-bottom: 12px; }
+.lv-vs-sep { color: var(--muted); font-size: 12px; font-weight: 600; }

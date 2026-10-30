@@ -29,6 +29,7 @@ START_WINDOW = 60_000  # ilk 60 sn'de alınanlar başlangıç itemi sayılır (m
 ROLES = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
 SCOUTING = threading.Event()  # oyuncu bilgisi yüklenirken toplayıcı bekler
 MIN_GAMES = 8        # bu kadar maçtan azsa öneri "az veri" uyarısıyla gösterilir
+MIN_MATCHUP = 5      # eşleşme önerisi için eşik (eşleşme verisi çok daha seyrek)
 _lock = threading.Lock()
 
 
@@ -168,8 +169,9 @@ def main_role(champion: int) -> str:
 
 
 def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
-    """Şampiyon (+ rol) için en çok kullanılan rün sayfaları ve item yolu.
-    Son yamada yeterli veri yoksa tüm yamalara bakılır."""
+    """Şampiyon (+ rol) için en çok kullanılan rün sayfaları ve item yolu. Son yamada
+    yeterli veri yoksa tüm yamalara bakılır. `opponent` verilirse ayrıca yalnızca o rakibe
+    karşı (aynı koridorda) oynanan maçlardan bir eşleşme önerisi döner (`matchup`)."""
     role = role or main_role(champion)
     cur = summary().get("patch")
     with _db() as c:
@@ -188,8 +190,16 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
         scope = cur
         if len(data) < MIN_GAMES:
             data, scope = rows(False), "all patches"
+        # eşleşme verisi az olur; tüm yamalara bakılır
         vs = rows(False, opponent) if opponent else []
 
+    out = {"champion": champion, "role": role, "scope": scope, **_aggregate(data, MIN_GAMES)}
+    out["matchup"] = {"opponent": opponent, "scope": "all patches", **_aggregate(vs, MIN_MATCHUP)} if opponent else None
+    return out
+
+
+def _aggregate(data: list[tuple], enough: int) -> dict:
+    """Maç satırlarından rün sayfaları, başlangıç itemleri, item sırası ve itemler."""
     games = len(data)
     wr = lambda w, n: round(100 * w / n, 1) if n else None  # noqa: E731
 
@@ -239,9 +249,7 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
                            "games": kv[1][0], "pick": wr(kv[1][0], n), "wr": wr(kv[1][1], kv[1][0])}
 
     return {
-        "champion": champion, "role": role, "games": games, "scope": scope,
-        "wr": wr(sum(d[0] for d in data), games), "enough": games >= MIN_GAMES,
-        "vs": {"champion": opponent, "games": len(vs), "wr": wr(sum(d[0] for d in vs), len(vs))} if opponent else None,
+        "games": games, "wr": wr(sum(d[0] for d in data), games), "enough": games >= enough,
         "runes": [{**json.loads(k), "games": v[0], "pick": wr(v[0], games), "wr": wr(v[1], v[0])}
                   for k, v in top_pages],
         "timed": len(timed),
@@ -251,88 +259,3 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
         "boots": [{**item(kv), "pick": wr(kv[1][0], boot_games)} for kv in rank(boots)[:2]],
         "situational": [item(kv) for kv in rank(legend)[3:9]],
     }
-
-
-class Collector:
-    """Arka planda Master+ maçlarını (timeline'larıyla) toplar: her bölgesel küme (europe:
-    TR+EUW, asia: KR) kendi iş parçacığında, kendi istek sınırıyla. Anahtar geçersizse bekler,
-    uygulama kapanınca durur. Oyuncu bilgisi yüklenirken aynı kümedeki toplayıcı bekler."""
-
-    def __init__(self, cfg: dict, log):
-        self.cfg, self.log = cfg, log
-        self.states = {c: "idle" for c in CLUSTERS}
-        self.added = 0
-        self._stop = threading.Event()
-        self._cond = threading.Condition()
-
-    @property
-    def state(self) -> str:
-        st = list(self.states.values())
-        if "collecting" in st:
-            return "collecting"
-        return next((x for x in st if x != "idle"), "idle")
-
-    def stop(self) -> None:
-        self._stop.set()
-        with self._cond:
-            self._cond.notify_all()
-
-    def update(self, cfg: dict) -> None:
-        """Ayarlar (ör. yeni API anahtarı) kaydedilince beklemeden devam et."""
-        self.cfg = cfg
-        with self._cond:
-            self._cond.notify_all()
-
-    def _wait(self, seconds: float) -> None:
-        with self._cond:
-            self._cond.wait(seconds)
-
-    def run(self) -> None:
-        workers = [threading.Thread(target=self._work, args=(c,), daemon=True) for c in CLUSTERS]
-        for w in workers:
-            w.start()
-        for w in workers:
-            w.join()
-
-    def _work(self, cluster: str) -> None:
-        platforms = CLUSTERS[cluster]
-        players: list[tuple[str, str]] = []  # (platform, puuid)
-        refreshed = 0.0
-        while not self._stop.is_set():
-            try:
-                key = self.cfg["riot"]["api_key"]
-                home = _cluster_of(self.cfg["riot"]["platform"])
-                if time.time() - refreshed > 3600 or not players:
-                    players = [(pf, pu) for pf in platforms for pu in RiotApi(key, pf, reserve=35).apex_puuids()]
-                    random.shuffle(players)
-                    refreshed = time.time()
-                    if not players:
-                        self.states[cluster] = "no players"
-                        self._wait(600)
-                        continue
-                if SCOUTING.is_set() and cluster == home:
-                    self.states[cluster] = "paused for player info"
-                    self._wait(5)
-                    continue
-                self.states[cluster] = "collecting"
-                platform, puuid = players.pop()
-                api = RiotApi(key, platform, reserve=35)  # 35 isteği ön plana bırak
-                ids = api.match_ids(puuid, count=10)
-                for mid in [m for m in ids if m not in known(ids)]:
-                    if self._stop.is_set():
-                        return
-                    if SCOUTING.is_set() and cluster == home:
-                        break
-                    if (info := api.match(mid)):
-                        store(info, "apex", api.timeline(mid))
-                        self.added += 1
-                        if self.added % 200 == 0:
-                            sm = summary()
-                            self.log(f"Stats: {sm['matches']} high-elo matches collected "
-                                     f"({', '.join(f'{k} {v}' for k, v in sm['regions'].items())})")
-            except KeyExpired:
-                self.states[cluster] = "key expired"
-                self._wait(600)
-            except Exception as e:  # ağ hatası vb.; toplayıcı ölmesin
-                self.states[cluster] = f"error: {e}"
-                self._wait(60)
