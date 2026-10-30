@@ -20,7 +20,10 @@ const Live = (() => {
   let current = null;     // gösterilen öneri
   let pageIndex = 0;      // aktarılacak rün sayfası (listeden tıklanarak seçilir)
   let tab = "general";    // "general" ya da "matchup" (rakibe özel öneri)
-  let oppManual = false;  // rakip elle girildiyse şampiyon seçimindeki tahmin üstüne yazmaz
+  // Rakip: "auto" = şampiyon seçiminden tahmin edilir, "manual" = elle yazılır (tahmin üstüne yazmaz)
+  let oppMode = "auto";
+  try { oppMode = localStorage.getItem("lv-opp") || "auto"; } catch {}
+  let lastPick = null;    // şampiyon seçiminden gelen son durum
   let enemies = [];       // şampiyon seçiminde rakip takımın kilitlediği şampiyonlar
 
   const cdn = (path) => `https://ddragon.leagueoflegends.com/cdn/${path}`;
@@ -55,17 +58,14 @@ const Live = (() => {
     // şampiyon seçimindeki seçimi otomatik göster (kullanıcı elle başka şampiyon seçmediyse)
     if (s.pick) {
       if (String(s.pick.enemies) !== String(enemies)) { enemies = s.pick.enemies || []; renderEnemies(); }
-      const k = `${s.pick.champion_id}|${s.pick.role}|${oppManual ? "" : s.pick.opponent || ""}`;
+      lastPick = s.pick;
+      const k = `${s.pick.champion_id}|${s.pick.role}|${oppMode === "auto" ? s.pick.opponent || "" : ""}`;
       if (k !== pickedAuto) {
         pickedAuto = k;
         const c = champs.find((x) => x.id === s.pick.champion_id);
         if (c) el("lv-champ").value = c.name;
         el("lv-role").value = s.pick.role;
-        if (!oppManual) {
-          const o = champs.find((x) => x.id === s.pick.opponent);
-          el("lv-vs").value = o ? o.name : "";
-          if (o) tab = "matchup";
-        }
+        if (oppMode === "auto") setAutoOpponent();
         load();
       }
     }
@@ -73,6 +73,18 @@ const Live = (() => {
   }
 
   // ---------- öneri ----------
+  function setAutoOpponent() {
+    const o = champs.find((x) => x.id === lastPick?.opponent);
+    el("lv-vs").value = o ? o.name : "";
+    if (o) tab = "matchup";
+  }
+
+  function renderOppMode() {
+    document.querySelectorAll("#lv-oppmode .chip").forEach((b) => b.classList.toggle("on", b.dataset.mode === oppMode));
+    el("lv-vs").readOnly = oppMode === "auto";
+    el("lv-vs").placeholder = oppMode === "auto" ? "Detected in champion select" : "Type the opponent";
+  }
+
   const byName = (input) => champs.find((x) => x.name.toLowerCase() === el(input).value.trim().toLowerCase());
 
   async function load() {
@@ -230,19 +242,39 @@ const Live = (() => {
   });
   el("lv-champ").addEventListener("change", load);
   el("lv-role").addEventListener("change", load);
-  el("lv-vs").addEventListener("change", () => {
-    oppManual = !!el("lv-vs").value.trim();
-    if (byName("lv-vs")) tab = "matchup";
+  // elle: ad bir şampiyonla tam eşleştiği anda yükler (Enter beklemez); silinince genel öneriye döner
+  let typed = "";
+  function onTyped() {
+    if (oppMode !== "manual") return;
+    const o = byName("lv-vs");
+    const k = o ? String(o.id) : el("lv-vs").value.trim() ? typed : "";
+    if (k === typed) return;
+    typed = k;
+    if (o) tab = "matchup";
     load();
+  }
+  el("lv-vs").addEventListener("input", onTyped);
+  el("lv-vs").addEventListener("change", onTyped);
+  function setMode(mode) {
+    oppMode = mode;
+    try { localStorage.setItem("lv-opp", mode); } catch {}
+    renderOppMode();
+    typed = "";
+    if (mode === "auto") { setAutoOpponent(); load(); } else { el("lv-vs").focus(); el("lv-vs").select(); }
+  }
+  el("lv-oppmode").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-mode]");
+    if (b && b.dataset.mode !== oppMode) setMode(b.dataset.mode);
   });
+  // rakip takımdan bir şampiyona tıklamak = elle seçmek
   el("lv-enemies").addEventListener("click", (e) => {
     const b = e.target.closest("[data-enemy]");
     if (!b) return;
+    if (oppMode !== "manual") { oppMode = "manual"; try { localStorage.setItem("lv-opp", "manual"); } catch {} renderOppMode(); }
     el("lv-vs").value = champs.find((x) => x.id === +b.dataset.enemy)?.name || "";
-    oppManual = true;
-    tab = "matchup";
-    load();
+    onTyped();
   });
+  renderOppMode();
   el("lv-imp-runes").onclick = () => doImport("runes");
   el("lv-suggest").addEventListener("click", (e) => {
     const t = e.target.closest("[data-tab]");

@@ -423,3 +423,5 @@ b.bad { color: var(--death); }
 .lv-enemy img { width: 18px; height: 18px; border-radius: 4px; }
 .lv-tabs { margin-bottom: 12px; }
 .lv-vs-sep { color: var(--muted); font-size: 12px; font-weight: 600; }
+.lv-oppmode { margin: 0; }
+.lv-pick-row input[readonly] { color: var(--muted); cursor: default; }
