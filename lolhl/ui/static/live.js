@@ -130,8 +130,124 @@ const Live = (() => {
     load();
   });
 
+  // ---------- item gezgini: koridor rakibi + rakip takımın AP oranı aralığı ----------
+  let xOpp = "lane";            // "lane" = koridor rakibine karşı, "any" = hepsi
+  let xPreset = "any";
+  let xMin = 0, xMax = 1;       // rakip takımın büyü hasarı oranı aralığı
+  let xLast = null;             // son yanıt (eşikler, şu anki takım, kaydırıcı aralığı)
+  let xTimer = null;
+  let xKey = "";
+
+  const xPresets = (t) => ({
+    any: [0, 1], ad: [0, t.thresholds[0]], mixed: [t.thresholds[0], t.thresholds[1]], ap: [t.thresholds[1], 1],
+    now: t.ap_now != null ? [Math.max(0, t.ap_now - 0.06), Math.min(1, t.ap_now + 0.06)] : null,
+  });
+
+  async function loadExplore() {
+    const c = byName("lv-champ");
+    const box = el("lv-explore");
+    if (!c) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    const opp = byName("lv-vs");
+    el("lv-x-oppname").textContent = opp ? opp.name : "—";
+    el("lv-x-opp").querySelector('[data-xopp="lane"]').disabled = !opp;
+    const useOpp = xOpp === "lane" && opp ? opp.id : null;
+    const key = `${c.id}|${el("lv-role").value}|${useOpp}|${xMin}|${xMax}|${enemies}`;
+    if (key === xKey) return;
+    xKey = key;
+    try {
+      const t = await api.item_table(c.id, el("lv-role").value, useOpp, xMin, xMax, enemies);
+      if (xKey !== key) return;
+      xLast = t;
+      // "şu anki takım" seçiliyse rakipler kilitledikçe aralık takımla birlikte kayar
+      if (xPreset === "now" && t.ap_now != null) {
+        const [a, b] = xPresets(t).now;
+        if (Math.abs(a - xMin) > 0.005) { xMin = a; xMax = b; xKey = ""; return loadExplore(); }
+      }
+      renderExplore(t);
+    } catch (e) { el("lv-x-body").innerHTML = `<div class="r-empty">${esc(String(e))}</div>`; }
+  }
+
+  function syncRange(t) {
+    const [lo, hi] = t.ap_span.map((v) => Math.round(v * 100));
+    for (const id of ["lv-x-min", "lv-x-max"]) { el(id).min = lo; el(id).max = hi; }
+    const clamp = (v) => Math.min(hi, Math.max(lo, Math.round(v * 100)));
+    el("lv-x-min").value = clamp(xMin);
+    el("lv-x-max").value = clamp(xMax);
+    const pos = (v) => `${((clamp(v) - lo) / (hi - lo)) * 100}%`;
+    el("lv-x-fill").style.left = pos(xMin);
+    el("lv-x-fill").style.right = `calc(100% - ${pos(xMax)})`;
+    const now = el("lv-x-nowmark");
+    now.classList.toggle("hidden", t.ap_now == null);
+    if (t.ap_now != null) now.style.left = pos(t.ap_now);
+    const show = (v, edge) => (v <= 0 || v >= 1 ? edge : `${Math.round(v * 100)}%`);
+    el("lv-x-readout").textContent = xMin <= 0 && xMax >= 1 ? "any"
+      : `${show(xMin, "0%")} – ${show(xMax, "100%")} magic`;
+    el("lv-x-now").disabled = t.ap_now == null;
+    el("lv-x-now").textContent = t.ap_now == null ? "Current enemy team"
+      : `Current enemy team (${Math.round(t.ap_now * 100)}% magic${t.partial ? ", partial" : ""})`;
+    document.querySelectorAll("#lv-x-presets .chip").forEach((b) => b.classList.toggle("on", b.dataset.preset === xPreset));
+    document.querySelectorAll("#lv-x-opp .chip").forEach((b) => b.classList.toggle("on", b.dataset.xopp === (xOpp === "lane" && !b.disabled ? "lane" : "any") ));
+  }
+
+  function renderExplore(t) {
+    syncRange(t);
+    const delta = (v) => (Math.abs(v) < 1 ? `<span class="muted">±0</span>`
+      : `<span class="lv-delta ${v > 0 ? "up" : "down"}">${v > 0 ? "▲" : "▼"}${Math.abs(v).toFixed(0)}</span>`);
+    const rows = (list) => list.map((it) => `<tr>
+      <td><div class="lv-x-item"><img src="${itemImg(it.id)}" alt="">${esc(it.name)}</div></td>
+      <td class="num">${pct(it.pick)}</td><td class="num">${delta(it.delta)}</td>
+      <td class="num">${pct(it.wr)}</td><td class="num muted">${it.games}</td></tr>`).join("");
+    const filters = [t.opponent ? `vs ${esc(t.opponent_name)}` : "any opponent",
+      xMin <= 0 && xMax >= 1 ? "any enemy damage" : el("lv-x-readout").textContent];
+    const head = `<div class="lv-x-head"><img src="${champImg(t.champion_key)}" alt="">
+      <div><b>${t.games}</b> of ${t.all_games} ${esc(t.champion_name)} games match (${filters.join(", ")})
+        · ${pct(t.wr)} win · ${t.scope === "all patches" ? "all patches" : `patch ${esc(t.scope)}`}
+        ${t.enough ? "" : `<div class="warn small">Under 20 games: percentages swing a lot. Widen the range or pick Any opponent.</div>`}</div></div>`;
+    if (!t.games) {
+      el("lv-x-body").innerHTML = head + `<div class="r-empty">No games with these filters. Widen the damage range or choose Any opponent.</div>`;
+      return;
+    }
+    const more = t.more.length ? `<div class="lv-x-more"><span class="muted small">Bought more often than in all ${esc(t.champion_name)} games:</span>
+      ${t.more.map((it) => `<span class="lv-x-tag"><img src="${itemImg(it.id)}" alt="">${esc(it.name)} <b class="lv-delta up">▲${it.delta.toFixed(0)}</b></span>`).join("")}</div>` : "";
+    el("lv-x-body").innerHTML = head + more + `<table class="lv-x-table">
+      <thead><tr><th>Item</th><th class="num">Bought</th><th class="num" title="Difference from all of this champion's games">vs all games</th><th class="num">Win rate</th><th class="num">Games</th></tr></thead>
+      <tbody>${t.boots.length ? `<tr class="lv-x-sec"><td colspan="5">Boots</td></tr>${rows(t.boots)}` : ""}
+      <tr class="lv-x-sec"><td colspan="5">Items</td></tr>${rows(t.items)}</tbody></table>`;
+  }
+
+  const xReload = () => { clearTimeout(xTimer); xTimer = setTimeout(loadExplore, 200); };
+  el("lv-x-opp").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-xopp]");
+    if (!b || b.disabled) return;
+    xOpp = b.dataset.xopp;
+    loadExplore();
+  });
+  el("lv-x-presets").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-preset]");
+    if (!b || b.disabled || !xLast) return;
+    const r = xPresets(xLast)[b.dataset.preset];
+    if (!r) return;
+    xPreset = b.dataset.preset;
+    [xMin, xMax] = r;
+    loadExplore();
+  });
+  for (const id of ["lv-x-min", "lv-x-max"]) {
+    el(id).addEventListener("input", () => {
+      let a = +el("lv-x-min").value, b = +el("lv-x-max").value;
+      if (a > b) id === "lv-x-min" ? (b = a, el("lv-x-max").value = b) : (a = b, el("lv-x-min").value = a);
+      // kaydırıcı ucuna çekilirse o taraf sınırsız sayılır
+      xMin = a <= +el(id).min ? 0 : a / 100;
+      xMax = b >= +el(id).max ? 1 : b / 100;
+      xPreset = "custom";
+      if (xLast) syncRange(xLast);
+      xReload();
+    });
+  }
+
   async function load() {
     loadCounters();
+    loadExplore();
     const c = byName("lv-champ");
     if (!c) return;
     const role = el("lv-role").value;

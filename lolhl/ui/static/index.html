@@ -248,6 +248,26 @@
       <div class="chip-row lv-enemies" id="lv-enemies"></div>
       <div class="lv-counters" id="lv-counters"></div>
       <div id="lv-suggest"><div class="r-empty">Pick a champion, or open champion select in the client.</div></div>
+      <div class="lv-explore hidden" id="lv-explore">
+        <h3 class="lv-h">Item explorer <span class="muted small">filter your champion's high-elo games by lane opponent and enemy team damage</span></h3>
+        <div class="lv-x-controls">
+          <div class="lv-x-row"><span class="muted small lv-x-label">Lane opponent</span>
+            <div class="chip-row" id="lv-x-opp"><button class="chip on" data-xopp="lane">vs <span id="lv-x-oppname">—</span></button><button class="chip" data-xopp="any">Any opponent</button></div></div>
+          <div class="lv-x-row"><span class="muted small lv-x-label">Enemy team damage</span>
+            <div class="chip-row" id="lv-x-presets">
+              <button class="chip on" data-preset="any">Any</button><button class="chip" data-preset="ad">AD-heavy</button>
+              <button class="chip" data-preset="mixed">Mixed</button><button class="chip" data-preset="ap">AP-heavy</button>
+              <button class="chip" data-preset="now" id="lv-x-now" disabled title="Available once enemies lock champions">Current enemy team</button>
+              <button class="chip" data-preset="custom" disabled>Custom</button></div></div>
+          <div class="lv-x-row"><span class="muted small lv-x-label">Magic damage share</span>
+            <div class="lv-x-range">
+              <div class="lv-x-track" id="lv-x-track"><div class="lv-x-fill" id="lv-x-fill"></div><div class="lv-x-now" id="lv-x-nowmark" title="Current enemy team"></div>
+                <input type="range" id="lv-x-min" min="0" max="100" step="1" value="0" aria-label="Minimum enemy magic damage %">
+                <input type="range" id="lv-x-max" min="0" max="100" step="1" value="100" aria-label="Maximum enemy magic damage %"></div>
+              <span class="lv-x-readout" id="lv-x-readout"></span></div></div>
+        </div>
+        <div id="lv-x-body"></div>
+      </div>
     </div>
 
     <div class="panel">

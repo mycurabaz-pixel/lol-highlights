@@ -269,19 +269,26 @@ def damage_group(ap: float | None, thr: tuple[float, float]) -> str | None:
     return "ad" if ap <= thr[0] else "ap" if ap >= thr[1] else "mixed"
 
 
-def _by_enemy_damage(rows: list[tuple], enemies_now: list[int] | None) -> dict:
-    """Satırları (match_id, win, ...) rakip takımın hasar profiline göre gruplar ve her grup
-    için item / bot tercihlerini, genel orana göre farkıyla döner."""
-    profiles = damage_profiles()
-    thr = _thresholds(profiles)
-    ids = list({r[0] for r in rows})
-    enemy = defaultdict(list)  # (match_id, kazanma durumu) -> o takımın şampiyonları
+def _teams(match_ids) -> dict[tuple[str, int], list[int]]:
+    """(match_id, kazanma durumu) -> o takımın şampiyonları. Her maçta 5 kişi kazanır,
+    5 kişi kaybeder; kazanma durumu farklı olan 5 kişi rakip takımdır."""
+    ids = list(match_ids)
+    teams = defaultdict(list)
     with _db() as c:
         for i in range(0, len(ids), 900):
             chunk = ids[i:i + 900]
             q = ",".join("?" * len(chunk))
             for mid, ch, win in c.execute(f"SELECT match_id, champion, win FROM parts WHERE match_id IN ({q})", chunk):
-                enemy[(mid, win)].append(ch)
+                teams[(mid, win)].append(ch)
+    return teams
+
+
+def _by_enemy_damage(rows: list[tuple], enemies_now: list[int] | None) -> dict:
+    """Satırları (match_id, win, ...) rakip takımın hasar profiline göre gruplar ve her grup
+    için item / bot tercihlerini, genel orana göre farkıyla döner."""
+    profiles = damage_profiles()
+    thr = _thresholds(profiles)
+    enemy = _teams({r[0] for r in rows})
     groups = defaultdict(list)
     for r in rows:
         g = damage_group(team_ap(enemy[(r[0], 1 - r[1])], profiles), thr)
@@ -313,6 +320,90 @@ def _by_enemy_damage(rows: list[tuple], enemies_now: list[int] | None) -> dict:
                     "more": [{"id": it, "delta": round(d, 1), "pick": round(p[it], 1)} for it, d in shifted[:4] if d >= 3]})
     now = damage_group(team_ap(enemies_now, profiles), thr) if enemies_now else None
     return {"groups": out, "current": now, "partial": bool(enemies_now) and len(enemies_now) < 5}
+
+
+def _span(values: list[float], extra: float | None) -> list[float]:
+    lo, hi = (values[len(values) // 50], values[-len(values) // 50 - 1]) if len(values) > 50 else (0.25, 0.65)
+    if extra is not None:
+        lo, hi = min(lo, extra), max(hi, extra)
+    return [round(lo - 0.02, 2), round(hi + 0.02, 2)]
+
+
+def item_table(champion: int, role: str = "", opponent: int | None = None,
+               ap_min: float = 0.0, ap_max: float = 1.0, enemies_now: list[int] | None = None) -> dict:
+    """Seçilen şampiyonun maçlarını süzer: (isteğe bağlı) yalnızca `opponent` koridor rakibine
+    karşı olanlar ve rakip takımın büyü hasarı oranı [ap_min, ap_max] aralığında olanlar.
+    Her item için alınma ve kazanma oranı, ayrıca şampiyonun bütün maçlarına göre farkı."""
+    role = role or main_role(champion)
+    cur = summary().get("patch")
+    sql = ("SELECT p.match_id, p.win, p.items, p.bound, p.role, p.opponent FROM parts p JOIN matches m "
+           "ON m.id=p.match_id WHERE m.queue=420 AND m.source='apex' AND p.champion=?")
+    args: list = [champion]
+    if role:
+        sql += " AND p.role=?"; args.append(role)
+    profiles = damage_profiles()
+
+    def load(patch_only: bool):
+        with _db() as c:
+            rows = c.execute(sql + " AND m.patch=?", (*args, cur)).fetchall() if patch_only else c.execute(sql, args).fetchall()
+        teams = _teams({r[0] for r in rows})
+        ap_of = {r[0]: team_ap(teams[(r[0], 1 - r[1])], profiles) for r in rows}
+        sel = [r for r in rows if (not opponent or r[5] == opponent)
+               and ap_of[r[0]] is not None and ap_min <= ap_of[r[0]] <= ap_max]
+        return rows, ap_of, sel
+
+    # süzgeçler veriyi çok inceltiyor: son yamada süzgeçten 30 maçtan azı geçerse bütün yamalar
+    rows, ap_of, sel = load(True) if cur else ([], {}, [])
+    scope = cur
+    if len(sel) < 30:
+        rows, ap_of, sel = load(False)
+        scope = "all patches"
+
+    def stats_of(data):
+        n = len(data)
+        cnt, wins = Counter(), Counter()
+        boot_games = 0
+        for mid, win, items, bound, row_role, _ in data:
+            known_boots = row_role != "BOTTOM" or bound is not None
+            boot_games += known_boots
+            for it in set(json.loads(items)) | ({bound} if bound else set()):
+                kind = ddragon.item_kind(it)
+                if kind and (kind != "boots" or known_boots):
+                    cnt[it] += 1
+                    wins[it] += win
+        return n, boot_games, cnt, wins
+
+    n_all, boots_all, cnt_all, _ = stats_of(rows)
+    n, boot_games, cnt, wins = stats_of(sel)
+    pct = lambda k, total: round(100 * k / total, 1) if total else None  # noqa: E731
+
+    def entry(it):
+        boots = ddragon.item_kind(it) == "boots"
+        pick = pct(cnt[it], boot_games if boots else n)
+        base = pct(cnt_all[it], boots_all if boots else n_all) or 0
+        return {"id": it, "games": cnt[it], "pick": pick, "wr": pct(wins[it], cnt[it]),
+                "delta": round(pick - base, 1), "boots": boots}
+
+    items = [entry(it) for it in cnt]
+    all_ap = sorted(a for a in ap_of.values() if a is not None)
+    ap_now = team_ap(enemies_now, profiles) if enemies_now else None
+    return {
+        "champion": champion, "role": role, "opponent": opponent, "scope": scope,
+        "games": n, "all_games": n_all, "wr": pct(sum(r[1] for r in sel), n),
+        "boots": sorted((i for i in items if i["boots"]), key=lambda i: -i["games"])[:3],
+        "items": sorted((i for i in items if not i["boots"]), key=lambda i: -i["games"])[:12],
+        # genele göre en çok yükselenler (en az %10 alınanlar arasında)
+        "more": sorted((i for i in items if (i["pick"] or 0) >= 10 and i["games"] >= 3 and i["delta"] >= 3),
+                       key=lambda i: -i["delta"])[:5],
+        "enough": n >= 20,
+        "range": [ap_min, ap_max],
+        "thresholds": list(_thresholds(profiles)),
+        # kaydırıcının anlamlı bir aralık göstermesi için: bu şampiyonun maçlarındaki rakip takım AP oranları
+        # (uçtaki %2 hariç) ve şu anki rakip takım
+        "ap_span": _span(all_ap, ap_now),
+        "ap_now": ap_now,
+        "partial": bool(enemies_now) and len(enemies_now) < 5,
+    }
 
 
 def suggest(champion: int, role: str = "", opponent: int | None = None,

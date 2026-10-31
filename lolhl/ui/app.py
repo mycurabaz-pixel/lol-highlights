@@ -494,6 +494,21 @@ class Api:
         return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
                 "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
 
+    def item_table(self, champion_id: int, role: str = "", opponent_id: int | None = None,
+                   ap_min: float = 0.0, ap_max: float = 1.0, enemies: list | None = None):
+        """Koridor rakibine ve/veya rakip takımın AP oranı aralığına göre item tablosu."""
+        t = stats.item_table(int(champion_id), role, int(opponent_id) if opponent_id else None,
+                             float(ap_min), float(ap_max), [int(e) for e in enemies or []])
+        items = ddragon.items()
+        for key in ("boots", "items", "more"):
+            for it in t[key]:
+                it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
+        champs = ddragon.champions()
+        for k, cid in (("champion", t["champion"]), ("opponent", t["opponent"])):
+            c = champs.get(cid, {}) if cid else {}
+            t[f"{k}_key"], t[f"{k}_name"] = c.get("id", ""), c.get("name", "")
+        return t
+
     def counters(self, opponent_id: int, role: str):
         """Koridor rakibine karşı en iyi / en kötü pick'ler (yüksek elo maçlarından)."""
         c = stats.counters(int(opponent_id), role)
