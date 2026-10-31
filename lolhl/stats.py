@@ -140,6 +140,16 @@ def summary() -> dict:
             "regions": {REGION_NAMES.get(r, r): n for r, n in regions}}
 
 
+def patch_start() -> int | None:
+    """Son yamanın (yaklaşık) başlangıcı: o yamada toplanan en eski maçın zamanı (saniye)."""
+    cur = summary().get("patch")
+    if not cur:
+        return None
+    with _db() as c:
+        t = c.execute("SELECT MIN(created) FROM matches WHERE patch=? AND source='apex'", (cur,)).fetchone()[0]
+    return int(t) if t else None
+
+
 def player_champion(puuid: str, champion: int, match_ids: list[str]) -> dict:
     """Oyuncunun verilen maçlarından (veritabanına inmiş olanlar) o şampiyonla kazanma durumu,
     kuyruk başına: {"solo": {games, wins, of}, "flex": {...}}. `of` = incelenen maç sayısı."""
@@ -215,11 +225,15 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
         scope = cur
         if len(data) < MIN_GAMES:
             data, scope = rows(False), "all patches"
-        # eşleşme verisi az olur; tüm yamalara bakılır
-        vs = rows(False, opponent) if opponent else []
+        # eşleşme de önce son yamadan; yetmezse tüm yamalar
+        vs, vs_scope = [], cur
+        if opponent:
+            vs = rows(True, opponent)
+            if len(vs) < MIN_MATCHUP:
+                vs, vs_scope = rows(False, opponent), "all patches"
 
     out = {"champion": champion, "role": role, "scope": scope, **_aggregate(data, MIN_GAMES)}
-    out["matchup"] = {"opponent": opponent, "scope": "all patches", **_aggregate(vs, MIN_MATCHUP)} if opponent else None
+    out["matchup"] = {"opponent": opponent, "scope": vs_scope, **_aggregate(vs, MIN_MATCHUP)} if opponent else None
     return out
 
 
@@ -350,7 +364,8 @@ class Collector:
                 self.states[cluster] = "collecting"
                 platform, puuid = players.pop()
                 api = RiotApi(key, platform, reserve=35)  # 35 isteği ön plana bırak
-                ids = api.match_ids(puuid, count=10)
+                # yalnızca son yamanın maçları (eski yama önerileri bozmasın, istek boşa gitmesin)
+                ids = api.match_ids(puuid, count=10, since=patch_start())
                 for mid in [m for m in ids if m not in known(ids)]:
                     if self._stop.is_set():
                         return
