@@ -407,7 +407,8 @@ class Api:
                     "-/filter_complex", str(script), "-map", f"[{last}]", "-map", "0:a?"]
             for enc in ("h264_nvenc", "libx264"):
                 r = subprocess.run([*base, *ENCODERS[enc], "-c:a", "aac", "-b:a", "160k",
-                                    "-movflags", "+faststart", str(dst)], capture_output=True)
+                                    "-movflags", "+faststart", str(dst)], capture_output=True,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
                 if r.returncode == 0:
                     break
             else:

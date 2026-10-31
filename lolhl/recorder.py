@@ -10,7 +10,8 @@ import obsws_python as obs
 
 def _obs_running() -> bool:
     out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq obs64.exe", "/NH"],
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True,
+                         creationflags=subprocess.CREATE_NO_WINDOW).stdout
     return "obs64.exe" in out
 
 

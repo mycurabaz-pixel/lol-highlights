@@ -56,12 +56,16 @@ def video_duration(video: str, tool_dir: str = "") -> float | None:
     if not probe:
         return None
     out = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration",
-                          "-of", "csv=p=0", video], capture_output=True, text=True)
+                          "-of", "csv=p=0", video], capture_output=True, text=True,
+                         creationflags=NO_WINDOW)
     try:
         return float(out.stdout.strip())
     except ValueError:
         return None
 
+
+# pythonw altında ffmpeg/ffprobe her çağrıda boş bir konsol penceresi açmasın
+NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 ENCODERS = {
     # NVIDIA kartta GPU ile hızlı; yoksa işlemci
@@ -86,11 +90,12 @@ def cut(video: str, clips: list[Clip], out_dir: Path, reencode: bool,
                 "-t", f"{c.end - c.start:.3f}"]
         if not reencode:
             subprocess.run([*base, "-c", "copy", "-avoid_negative_ts", "make_zero", str(dst)],
-                           check=True)
+                           check=True, creationflags=NO_WINDOW)
         else:
             for enc in list(order):
                 r = subprocess.run([*base, *ENCODERS[enc], "-c:a", "aac", "-b:a", "160k",
-                                    "-movflags", "+faststart", str(dst)], capture_output=True)
+                                    "-movflags", "+faststart", str(dst)], capture_output=True,
+                                   creationflags=NO_WINDOW)
                 if r.returncode == 0:
                     break
                 order.remove(enc)  # bu kodlayıcı yok/çalışmıyor; sonrakini dene
