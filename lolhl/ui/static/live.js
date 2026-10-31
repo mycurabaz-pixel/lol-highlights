@@ -115,7 +115,7 @@ const Live = (() => {
     el("lv-counters").innerHTML = `
       <div class="lv-c-head"><img src="${champImg(c.opponent_key)}" alt="">
         <h3 class="lv-h">Picks vs ${esc(c.opponent_name)} · ${esc(c.role_name)}</h3>${guessed}
-        <span class="spacer"></span><span class="muted small">${c.games} high-elo games · ${esc(c.scope)}</span></div>
+        <span class="spacer"></span><span class="muted small" title="Ranked solo queue games of Challenger, Grandmaster and Master players on TR, EUW and KR, collected in the background. Your own games are not used here.">${c.games} Master+ solo queue games (TR/EUW/KR, not yours) · ${/^\d/.test(c.scope) ? `patch ${esc(c.scope)}` : esc(c.scope)}</span></div>
       ${c.champions ? `<div class="lv-c-cols">
         <div><div class="lv-c-title good">Best picks</div>${list(c.best, "good")}</div>
         <div><div class="lv-c-title bad">Worst picks</div>${list(c.worst, "bad")}</div></div>${thin}`
