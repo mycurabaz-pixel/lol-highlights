@@ -25,6 +25,24 @@ def _try_connect(cfg: dict) -> "ObsRecorder | None":
         return None
 
 
+def close_obs(cfg: dict) -> bool:
+    """Kayıt sürüyorsa durdurur, sonra OBS'i normal yoldan kapatır (zorla değil,
+    böylece ayarlarını kaydeder ve bir sonraki açılışta güvenli mod sormaz)."""
+    if not _obs_running():
+        return False
+    if (r := _try_connect(cfg)) and r.cl.get_record_status().output_active:
+        r.stop()
+    # Tepsiye küçültülmüş OBS'in penceresi gizli olduğundan normal kapatma isteği
+    # çoğu zaman ulaşmaz; kayıt zaten durdurulduğu için zorla kapatmak güvenli.
+    for args in (["taskkill", "/IM", "obs64.exe"], ["taskkill", "/F", "/IM", "obs64.exe"]):
+        subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        for _ in range(10):
+            time.sleep(0.5)
+            if not _obs_running():
+                return True
+    return False
+
+
 def ensure_obs(cfg: dict) -> "ObsRecorder":
     """OBS açıksa bağlanır; değilse tepsiye küçültülmüş olarak açıp bağlanır."""
     if (r := _try_connect(cfg)):

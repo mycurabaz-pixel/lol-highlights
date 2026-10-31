@@ -612,7 +612,7 @@ class Api:
         # yeni ayarlar watcher yeniden başlayınca geçerli olur
         busy = self._watcher and self._watcher.state in ("recording", "processing")
         if not busy and self._thread and self._thread.is_alive():
-            self.stop()
+            self._watcher.stop(close_obs=False)
             self._thread.join(timeout=10)
             self.start()
         return {"restarted": not busy}
@@ -639,6 +639,9 @@ def main() -> None:
     api._start_collector()
     webview.start(gui="edgechromium", debug=os.environ.get("LOLHL_DEBUG") == "1")
     api.stop()
+    # watcher thread'i daemon; OBS'i kapatabilmesi için kısa süre bekle
+    if api._thread and api._thread.is_alive():
+        api._thread.join(timeout=15)
 
 
 if __name__ == "__main__":

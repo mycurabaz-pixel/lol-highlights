@@ -11,7 +11,7 @@ from typing import Callable
 
 from .lcu import Lcu, live_game_time, live_skin
 from .pipeline import process
-from .recorder import ObsRecorder, ensure_obs
+from .recorder import ObsRecorder, close_obs, ensure_obs
 from .riot_api import RiotApi
 
 MAX_TRIES = 3  # pratik modu gibi API'ye hiç düşmeyen maçlar sonsuza dek denenmesin
@@ -28,8 +28,11 @@ class Watcher:
         self.state = "stopped"  # stopped, starting, waiting, recording, processing, error
         self.error = ""
         self._stop = threading.Event()
+        self._close_obs = False
 
-    def stop(self) -> None:
+    def stop(self, close_obs: bool = True) -> None:
+        """close_obs=False: ayar değişikliği gibi hemen yeniden başlatılacak durumlar."""
+        self._close_obs = close_obs
         self._stop.set()
 
     def _set(self, state: str, msg: str | None = None) -> None:
@@ -84,6 +87,12 @@ class Watcher:
         except Exception as e:
             self.error = str(e)
             self._set("error", f"Error: {e}")
+        if self._stop.is_set() and self._close_obs:  # kullanıcı durdurduysa OBS'i de kapat
+            try:
+                if close_obs(self.cfg["obs"]):
+                    self.log("OBS closed.")
+            except Exception as e:
+                self.log(f"Could not close OBS: {e}")
 
     def _run(self) -> None:
         cfg = self.cfg
