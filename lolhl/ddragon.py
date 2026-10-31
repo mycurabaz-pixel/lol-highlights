@@ -45,7 +45,11 @@ def champions() -> dict[int, dict]:
 
 
 def items() -> dict[int, dict]:
-    return {int(k): v for k, v in _load("item")["data"].items()}
+    # item_kind her öneride on binlerce kez çağırır; sözlüğü her seferinde kurmamak için sürüm başına sakla
+    key = f"{version()}_items_by_id"
+    if key not in _mem:
+        _mem[key] = {int(k): v for k, v in _load("item")["data"].items()}
+    return _mem[key]
 
 
 def runes() -> dict[int, dict]:

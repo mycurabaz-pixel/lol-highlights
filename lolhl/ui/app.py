@@ -473,11 +473,19 @@ class Api:
         stats.store(info, "scout")
         self._start_scout(scout.match_players(info, self._puuid), "preview")
 
-    def suggest(self, champion_id: int, role: str = "", opponent_id: int | None = None):
-        """Genel öneri; `opponent_id` verilirse ayrıca `matchup` (yalnızca o rakibe karşı)."""
-        s = stats.suggest(int(champion_id), role, int(opponent_id) if opponent_id else None)
+    def suggest(self, champion_id: int, role: str = "", opponent_id: int | None = None,
+                enemies: list | None = None):
+        """Genel öneri; `opponent_id` verilirse ayrıca `matchup` (yalnızca o rakibe karşı).
+        `enemies` (seçimde kilitlenen rakipler) verilirse rakip takımın AP/AD grubu işaretlenir."""
+        s = stats.suggest(int(champion_id), role, int(opponent_id) if opponent_id else None,
+                          [int(e) for e in enemies or []])
         champs = ddragon.champions()
         self._names(s)
+        items = ddragon.items()
+        for g in s["vs_damage"]["groups"]:
+            for key in ("core", "boots", "situational", "more"):
+                for it in g[key]:
+                    it["name"] = items.get(it["id"], {}).get("name", str(it["id"]))
         if s["matchup"]:
             self._names(s["matchup"])
             o = champs.get(int(opponent_id), {})

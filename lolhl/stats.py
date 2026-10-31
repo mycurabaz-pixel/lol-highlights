@@ -52,7 +52,8 @@ def _db() -> sqlite3.Connection:
         c.execute("ALTER TABLE matches ADD COLUMN source TEXT")
     # timeline'dan: başlangıç itemleri ve satın alma sırası (timeline'ı olmayan eski maçlarda boş)
     cols = [r[1] for r in c.execute("PRAGMA table_info(parts)")]
-    for col, kind in (("start", "TEXT"), ("build", "TEXT"), ("bound", "INT")):
+    # mdmg/pdmg: şampiyonlara verilen büyü / fiziksel hasar (AP-AD profili için; eski maçlarda boş)
+    for col, kind in (("start", "TEXT"), ("build", "TEXT"), ("bound", "INT"), ("mdmg", "INT"), ("pdmg", "INT")):
         if col not in cols:
             c.execute(f"ALTER TABLE parts ADD COLUMN {col} {kind}")
     return c
@@ -110,14 +111,15 @@ def store(info: dict, source: str = "apex", timeline: dict | None = None) -> Non
                      by_role.get((300 - p["teamId"], role)),
                      json.dumps(start) if start is not None else None, json.dumps(build) if build is not None else None,
                      # rol görevi yuvası: ADC'nin botu 6 item yuvasında değil burada durur
-                     p.get("roleBoundItem") or 0))
+                     p.get("roleBoundItem") or 0,
+                     p.get("magicDamageDealtToChampions"), p.get("physicalDamageDealtToChampions")))
     with _lock, _db() as c:
         if c.execute("SELECT 1 FROM matches WHERE id=?", (mid,)).fetchone():
             return
         c.execute("INSERT INTO matches (id, patch, queue, created, source) VALUES (?,?,?,?,?)",
                   (mid, patch_of(i.get("gameVersion", "")), i.get("queueId"), i.get("gameCreation", 0) / 1000, source))
-        c.executemany("INSERT INTO parts (match_id, puuid, champion, role, win, runes, items, opponent, start, build, bound) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        c.executemany("INSERT INTO parts (match_id, puuid, champion, role, win, runes, items, opponent, start, build, bound, "
+                      "mdmg, pdmg) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
 
 def known(match_ids: list[str]) -> set[str]:
@@ -203,15 +205,127 @@ def assign_roles(champions: list[int]) -> dict[int, str]:
     return dict(zip(champions, best))
 
 
-def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
+# ---------- rakip takımın hasar profili (AP / AD) ----------
+# Riot'un şampiyon puanları (info.attack / info.magic) birkaç şampiyonda yanıltıyor
+FALLBACK_AP = {4: 0.85, 42: 0.75}  # Twisted Fate, Corki: hasarlarının çoğu büyü
+DAMAGE_MIN = 30   # şampiyonun gerçek hasar oranının kullanılması için gereken maç
+DAMAGE_GROUPS = (("ad", "AD-heavy"), ("mixed", "Mixed"), ("ap", "AP-heavy"))
+_profile_cache: dict = {}
+
+
+def damage_profiles() -> dict[int, tuple[float, float]]:
+    """championId -> (büyü hasarı oranı 0..1, ağırlık). Yeterli maçta kaydedilmiş gerçek
+    hasardan; yoksa Riot'un şampiyon puanlarından. Ağırlık, takım içinde ne kadar hasar
+    verdiği: tanklar ve destekler takım profilini daha az belirler."""
+    with _db() as c:
+        n = c.execute("SELECT COUNT(*) FROM parts WHERE mdmg IS NOT NULL").fetchone()[0]
+        if _profile_cache.get("n") == n:
+            return _profile_cache["p"]
+        measured = c.execute("SELECT champion, COUNT(*), AVG(mdmg), AVG(pdmg) FROM parts "
+                             "WHERE mdmg IS NOT NULL GROUP BY champion").fetchall()
+    raw = {int(v["key"]): v for v in ddragon._load("champion")["data"].values()}
+    out = {}
+    for cid, ch in raw.items():
+        i, tags = ch["info"], ch["tags"]
+        t = i["attack"] + i["magic"]
+        share = FALLBACK_AP.get(cid, i["magic"] / t if t else 0.5)
+        out[cid] = (share, 0.5 if tags and tags[0] in ("Tank", "Support") else 1.0)
+    total = [m + p for _, k, m, p in measured if k >= DAMAGE_MIN]
+    avg_total = sum(total) / len(total) if total else 0
+    for cid, k, m, p in measured:
+        if k >= DAMAGE_MIN and m + p > 0:
+            out[cid] = (m / (m + p), min(1.5, (m + p) / avg_total) if avg_total else 1.0)
+    _profile_cache.update(n=n, p=out)
+    return out
+
+
+def team_ap(champions: list[int], profiles: dict | None = None) -> float | None:
+    """Takımın (hasar ağırlıklı) büyü hasarı oranı."""
+    profiles = profiles or damage_profiles()
+    known_ = [profiles[c] for c in champions if c in profiles]
+    w = sum(wt for _, wt in known_)
+    return sum(s * wt for s, wt in known_) / w if w else None
+
+
+def _thresholds(profiles: dict) -> tuple[float, float]:
+    """AD-heavy / AP-heavy sınırları: toplanan maçlardaki takımların alt ve üst %25'i.
+    Sabit sınır yerine dağılımdan alınır ki gruplar dengeli kalsın."""
+    # toplayıcı sürekli maç eklediği için her seferinde değil, 10 dakikada bir hesaplanır
+    key = ("thr", int(time.time() // 600))
+    if key not in _profile_cache:
+        teams = defaultdict(list)
+        with _db() as c:
+            for mid, ch, win in c.execute("SELECT p.match_id, p.champion, p.win FROM parts p JOIN matches m "
+                                          "ON m.id=p.match_id WHERE m.source='apex' AND m.queue=420"):
+                teams[(mid, win)].append(ch)
+        vals = sorted(v for t in teams.values() if len(t) == 5 and (v := team_ap(t, profiles)) is not None)
+        _profile_cache[key] = (vals[len(vals) // 4], vals[3 * len(vals) // 4]) if len(vals) > 100 else (0.38, 0.54)
+    return _profile_cache[key]
+
+
+def damage_group(ap: float | None, thr: tuple[float, float]) -> str | None:
+    if ap is None:
+        return None
+    return "ad" if ap <= thr[0] else "ap" if ap >= thr[1] else "mixed"
+
+
+def _by_enemy_damage(rows: list[tuple], enemies_now: list[int] | None) -> dict:
+    """Satırları (match_id, win, ...) rakip takımın hasar profiline göre gruplar ve her grup
+    için item / bot tercihlerini, genel orana göre farkıyla döner."""
+    profiles = damage_profiles()
+    thr = _thresholds(profiles)
+    ids = list({r[0] for r in rows})
+    enemy = defaultdict(list)  # (match_id, kazanma durumu) -> o takımın şampiyonları
+    with _db() as c:
+        for i in range(0, len(ids), 900):
+            chunk = ids[i:i + 900]
+            q = ",".join("?" * len(chunk))
+            for mid, ch, win in c.execute(f"SELECT match_id, champion, win FROM parts WHERE match_id IN ({q})", chunk):
+                enemy[(mid, win)].append(ch)
+    groups = defaultdict(list)
+    for r in rows:
+        g = damage_group(team_ap(enemy[(r[0], 1 - r[1])], profiles), thr)
+        if g:
+            groups[g].append(r[1:])  # match_id'siz, _aggregate'in beklediği biçim
+
+    def picks(data):
+        n = len(data)
+        cnt = Counter()
+        for win, _, items, _, _, bound, _ in data:
+            for it in set(json.loads(items)) | ({bound} if bound else set()):
+                if ddragon.item_kind(it):
+                    cnt[it] += 1
+        return {it: 100 * k / n for it, k in cnt.items()} if n else {}
+
+    overall = picks([r for g in groups.values() for r in g])
+    out = []
+    for key, label in DAMAGE_GROUPS:
+        data = groups.get(key, [])
+        agg = _aggregate(data, MIN_GAMES)
+        p = picks(data)
+        # bu grupta genele göre en çok daha sık alınan itemler: rakibe göre alınan item burada çıkar
+        shifted = sorted(((it, p[it] - overall.get(it, 0)) for it in p if p[it] >= 8), key=lambda kv: kv[1], reverse=True)
+        for lst in (agg["core"], agg["boots"], agg["situational"]):
+            for it in lst:
+                it["delta"] = round(p.get(it["id"], 0) - overall.get(it["id"], 0), 1)
+        out.append({"key": key, "label": label, "games": agg["games"], "wr": agg["wr"], "enough": agg["enough"],
+                    "core": agg["core"], "boots": agg["boots"], "situational": agg["situational"],
+                    "more": [{"id": it, "delta": round(d, 1), "pick": round(p[it], 1)} for it, d in shifted[:4] if d >= 3]})
+    now = damage_group(team_ap(enemies_now, profiles), thr) if enemies_now else None
+    return {"groups": out, "current": now, "partial": bool(enemies_now) and len(enemies_now) < 5}
+
+
+def suggest(champion: int, role: str = "", opponent: int | None = None,
+            enemies: list[int] | None = None) -> dict:
     """Şampiyon (+ rol) için en çok kullanılan rün sayfaları ve item yolu. Son yamada
     yeterli veri yoksa tüm yamalara bakılır. `opponent` verilirse ayrıca yalnızca o rakibe
     karşı (aynı koridorda) oynanan maçlardan bir eşleşme önerisi döner (`matchup`)."""
     role = role or main_role(champion)
     cur = summary().get("patch")
     with _db() as c:
-        def rows(patch_only: bool, vs: int | None = None):
-            sql = ("SELECT p.win, p.runes, p.items, p.start, p.build, p.bound, p.role FROM parts p JOIN matches m ON m.id=p.match_id "
+        def rows(patch_only: bool, vs: int | None = None, with_id: bool = False):
+            sql = ("SELECT " + ("p.match_id, " if with_id else "") +
+                   "p.win, p.runes, p.items, p.start, p.build, p.bound, p.role FROM parts p JOIN matches m ON m.id=p.match_id "
                    "WHERE m.queue=420 AND m.source='apex' AND p.champion=?")
             args: list = [champion]
             if role:
@@ -231,9 +345,13 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
             vs = rows(True, opponent)
             if len(vs) < MIN_MATCHUP:
                 vs, vs_scope = rows(False, opponent), "all patches"
+        # rakip takımın AP/AD'sine göre: maçlar üç gruba bölündüğü için daha çok veri ister
+        dmg_scope = cur if len(data) >= 3 * 4 * MIN_GAMES and scope == cur else "all patches"
+        dmg_rows = rows(dmg_scope == cur, with_id=True)
 
     out = {"champion": champion, "role": role, "scope": scope, **_aggregate(data, MIN_GAMES)}
     out["matchup"] = {"opponent": opponent, "scope": vs_scope, **_aggregate(vs, MIN_MATCHUP)} if opponent else None
+    out["vs_damage"] = {"scope": dmg_scope, **_by_enemy_damage(dmg_rows, enemies)}
     return out
 
 

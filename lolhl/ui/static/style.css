@@ -445,3 +445,19 @@ b.bad { color: var(--death); }
 .lv-counter .small { width: 70px; text-align: right; }
 .lv-c-note { margin-top: 10px; }
 @media (max-width: 900px) { .lv-c-cols { grid-template-columns: 1fr; } }
+
+/* Live: rakip takımın hasar tipine göre itemler */
+.lv-damage { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.lv-d-note { margin: -4px 0 10px; }
+.lv-d-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.lv-d-col { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.lv-d-col.lv-current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.lv-d-title { font-weight: 650; margin-bottom: 6px; display: flex; flex-direction: column; gap: 2px; }
+.lv-d-sub { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin: 8px 0 3px; }
+.lv-d-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 2px 0; }
+.lv-d-item img { width: 22px; height: 22px; border-radius: 4px; }
+.lv-d-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-delta { font-size: 11px; font-weight: 700; width: 30px; text-align: right; }
+.lv-delta.up { color: var(--kill); }
+.lv-delta.down { color: var(--death); }
+@media (max-width: 1000px) { .lv-d-cols { grid-template-columns: 1fr; } }

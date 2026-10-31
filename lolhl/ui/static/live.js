@@ -59,7 +59,8 @@ const Live = (() => {
     if (s.pick) {
       if (String(s.pick.enemies) !== String(enemies)) { enemies = s.pick.enemies || []; renderEnemies(); }
       lastPick = s.pick;
-      const k = `${s.pick.champion_id}|${s.pick.role}|${oppMode === "auto" ? s.pick.opponent || "" : ""}`;
+      // rakip kilitledikçe AP/AD grubu değişebilir, o yüzden rakip listesi de anahtarda
+      const k = `${s.pick.champion_id}|${s.pick.role}|${oppMode === "auto" ? s.pick.opponent || "" : ""}|${enemies}`;
       if (k !== pickedAuto) {
         pickedAuto = k;
         const c = champs.find((x) => x.id === s.pick.champion_id);
@@ -136,11 +137,11 @@ const Live = (() => {
     const role = el("lv-role").value;
     const opp = byName("lv-vs");
     if (!opp) tab = "general";
-    const key = `${c.id}|${role}|${opp ? opp.id : ""}`;
+    const key = `${c.id}|${role}|${opp ? opp.id : ""}|${enemies}`;
     shown = key;
     el("lv-suggest").innerHTML = `<div class="r-empty">Loading...</div>`;
     try {
-      const s = await api.suggest(c.id, role, opp ? opp.id : null);
+      const s = await api.suggest(c.id, role, opp ? opp.id : null, enemies);
       if (shown !== key) return;
       current = s;
       pageIndex = 0;
@@ -207,7 +208,32 @@ const Live = (() => {
     el("lv-suggest").innerHTML = head + `<div class="lv-grid"><div><h3 class="lv-h">Rune pages <span class="muted small">click one to choose what Import runes copies</span></h3>${pages}</div>
       <div><h3 class="lv-h">Items <span class="muted small">pick rate / win rate</span></h3>
       ${groups("Starting items", s.start, false)}${groups("Build order (first 3 items)", s.order, true)}${timedNote}
-      ${items(s.order.length ? "Most built" : "Core", s.core)}${items("Boots", s.boots)}${items("Situational", s.situational)}</div></div>`;
+      ${items(s.order.length ? "Most built" : "Core", s.core)}${items("Boots", s.boots)}${items("Situational", s.situational)}</div></div>`
+      + renderDamage(full);
+  }
+
+  // Rakip takımın hasar tipine göre (AD ağırlıklı / karma / AP ağırlıklı) item tercihleri.
+  // Ok: o gruptaki alınma oranının, tüm maçlardaki orana göre farkı.
+  function renderDamage(full) {
+    const d = full.vs_damage;
+    if (!d || !d.groups.some((g) => g.games)) return "";
+    const delta = (v) => (Math.abs(v) < 1 ? "" : `<span class="lv-delta ${v > 0 ? "up" : "down"}">${v > 0 ? "▲" : "▼"}${Math.abs(v).toFixed(0)}</span>`);
+    const row = (it) => `<div class="lv-d-item" title="${esc(it.name)}: bought in ${pct(it.pick)} of these games${it.delta != null ? ` (${it.delta > 0 ? "+" : ""}${it.delta} pts vs all games)` : ""}">
+      <img src="${itemImg(it.id)}" alt=""><span class="lv-d-name">${esc(it.name)}</span><span>${pct(it.pick)}</span>${delta(it.delta)}</div>`;
+    const note = d.current
+      ? `Enemy team so far looks <b>${esc(d.groups.find((g) => g.key === d.current).label)}</b>${d.partial ? " (not all picks locked yet)" : ""}.`
+      : "Highlights the enemy team's group once they lock champions.";
+    const cols = d.groups.map((g) => `<div class="lv-d-col ${g.key === d.current ? "lv-current" : ""}">
+      <div class="lv-d-title">vs ${esc(g.label)} <span class="muted small">${g.games} games · ${pct(g.wr)} win</span></div>
+      ${g.games ? `${g.more.length ? `<div class="lv-d-sub">Built more often here</div>${g.more.map(row).join("")}` : ""}
+        <div class="lv-d-sub">Boots</div>${g.boots.map(row).join("")}
+        <div class="lv-d-sub">Core</div>${g.core.map(row).join("")}
+        <div class="lv-d-sub">Situational</div>${g.situational.slice(0, 4).map(row).join("")}
+        ${g.enough ? "" : `<div class="warn small">few games</div>`}` : `<div class="muted small">No games yet.</div>`}
+    </div>`).join("");
+    return `<div class="lv-damage"><h3 class="lv-h">Items by enemy team damage
+      <span class="muted small">${esc(full.champion_name)} games split by how much of the enemy team's damage was magic · ${d.scope === "all patches" ? "all patches" : `patch ${esc(d.scope)}`}</span></h3>
+      <div class="muted small lv-d-note">${note}</div><div class="lv-d-cols">${cols}</div></div>`;
   }
 
   async function doImport(kind) {
