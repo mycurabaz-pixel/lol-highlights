@@ -241,7 +241,7 @@ COUNTER_MIN = 8      # bir şampiyonun karşı pick listesine girmesi için gere
 COUNTER_PRIOR = 20   # kazanma oranı az maçta %50'ye bu kadar "sanal maç" ile çekilir
 
 
-def counters(opponent: int, role: str, limit: int = 5) -> dict:
+def counters(opponent: int, role: str, limit: int = 6) -> dict:
     """`opponent`a karşı aynı koridorda (`role`) oynanan şampiyonların kazanma oranları.
     En iyi ve en kötü pick'ler. Az maçlı eşleşmeler yanıltmasın diye oran %50'ye doğru
     çekilerek sıralanır (8 maçta 7 galibiyet, 300 maçta %56'dan üstte görünmesin); ekranda
