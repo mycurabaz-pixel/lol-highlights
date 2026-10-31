@@ -436,11 +436,12 @@ class Api:
         if phase == "ChampSelect":
             s = self._lcu.get("/lol-champ-select/v1/session") or {}
             me = next((p for p in s.get("myTeam", []) if p.get("cellId") == s.get("localPlayerCellId")), None)
-            cid = me and (me.get("championId") or me.get("championPickIntent"))
-            if cid:
+            if me:
+                # şampiyon seçmeden önce de dolu: karşı pick'ler tam o anda lazım
+                cid = me.get("championId") or me.get("championPickIntent") or None
                 role = POSITIONS.get(me.get("assignedPosition") or "", "")
-                # rakip takımın şampiyonları seçimde herkese görünür (isimleri değil); koridor
-                # rakibi, rakip şampiyonlar rollere birlikte dağıtılarak bulunur
+                # rakip takımın şampiyonları seçimde herkese görünür (isimleri ve rolleri değil);
+                # koridor rakibi, rakip şampiyonlar rollere birlikte dağıtılarak tahmin edilir
                 enemies = [p["championId"] for p in s.get("theirTeam", []) if p.get("championId")]
                 roles = stats.assign_roles(enemies) if role else {}
                 guess = next((e for e, r in roles.items() if r == role), None)
@@ -484,6 +485,17 @@ class Api:
         c = champs.get(int(champion_id), {})
         return {**s, "champion": c.get("id", ""), "champion_name": c.get("name", ""),
                 "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
+
+    def counters(self, opponent_id: int, role: str):
+        """Koridor rakibine karşı en iyi / en kötü pick'ler (yüksek elo maçlarından)."""
+        c = stats.counters(int(opponent_id), role)
+        champs = ddragon.champions()
+        for r in c["best"] + c["worst"]:
+            ch = champs.get(r["id"], {})
+            r.update(key=ch.get("id", ""), name=ch.get("name", str(r["id"])))
+        o = champs.get(int(opponent_id), {})
+        return {**c, "opponent_key": o.get("id", ""), "opponent_name": o.get("name", ""),
+                "role_name": ROLE_NAMES.get(role, role)}
 
     @staticmethod
     def _names(s: dict) -> None:

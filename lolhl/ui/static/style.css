@@ -425,3 +425,23 @@ b.bad { color: var(--death); }
 .lv-vs-sep { color: var(--muted); font-size: 12px; font-weight: 600; }
 .lv-oppmode { margin: 0; }
 .lv-pick-row input[readonly] { color: var(--muted); cursor: default; }
+
+/* Live: karşı pick'ler */
+.lv-counters:empty { display: none; }
+.lv-counters { margin: 12px 0 16px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.lv-c-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.lv-c-head > img { width: 30px; height: 30px; border-radius: 6px; }
+.lv-c-head .lv-h { margin: 0; }
+.lv-c-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.lv-c-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 6px; }
+.lv-c-title.good { color: var(--kill); }
+.lv-c-title.bad { color: var(--death); }
+.lv-counter { display: flex; align-items: center; gap: 9px; width: 100%; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.lv-counter:hover { background: var(--panel-2); }
+.lv-counter img { width: 28px; height: 28px; border-radius: 5px; }
+.lv-c-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-counter.good b { color: var(--kill); }
+.lv-counter.bad b { color: var(--death); }
+.lv-counter .small { width: 70px; text-align: right; }
+.lv-c-note { margin-top: 10px; }
+@media (max-width: 900px) { .lv-c-cols { grid-template-columns: 1fr; } }

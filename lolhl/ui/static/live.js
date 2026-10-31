@@ -87,7 +87,50 @@ const Live = (() => {
 
   const byName = (input) => champs.find((x) => x.name.toLowerCase() === el(input).value.trim().toLowerCase());
 
+  // ---------- karşı pick'ler: koridor rakibine karşı en iyi / en kötü ----------
+  let countersKey = "";
+  async function loadCounters() {
+    const opp = byName("lv-vs");
+    const role = el("lv-role").value;
+    const box = el("lv-counters");
+    if (!opp || !role) { countersKey = ""; box.innerHTML = ""; return; }
+    const key = `${opp.id}|${role}`;
+    if (key === countersKey) return;
+    countersKey = key;
+    try {
+      const c = await api.counters(opp.id, role);
+      if (countersKey === key) renderCounters(c);
+    } catch (e) { box.innerHTML = `<div class="r-empty">${esc(String(e))}</div>`; }
+  }
+
+  function renderCounters(c) {
+    const guessed = oppMode === "auto" ? `<span class="muted small" title="Enemy roles are hidden in champion select; guessed from how often each enemy champion is played in each role">guessed lane opponent</span>` : "";
+    const list = (rows, cls) => rows.length ? rows.map((r) => `
+      <button class="lv-counter ${cls}" data-champ="${esc(r.name)}" title="Show runes and items for ${esc(r.name)}">
+        <img src="${champImg(r.key)}" alt=""><span class="lv-c-name">${esc(r.name)}</span>
+        <b>${r.wr}%</b><span class="muted small">${r.games} games</span></button>`).join("")
+      : `<div class="muted small">Not enough games yet.</div>`;
+    const thin = c.best.length && c.best.every((r) => r.games < 30)
+      ? `<div class="muted small lv-c-note">Small samples (under 30 games each): treat these as hints, not rules. They firm up as the collector adds matches.</div>` : "";
+    el("lv-counters").innerHTML = `
+      <div class="lv-c-head"><img src="${champImg(c.opponent_key)}" alt="">
+        <h3 class="lv-h">Picks vs ${esc(c.opponent_name)} · ${esc(c.role_name)}</h3>${guessed}
+        <span class="spacer"></span><span class="muted small">${c.games} high-elo games · ${esc(c.scope)}</span></div>
+      ${c.champions ? `<div class="lv-c-cols">
+        <div><div class="lv-c-title good">Best picks</div>${list(c.best, "good")}</div>
+        <div><div class="lv-c-title bad">Worst picks</div>${list(c.worst, "bad")}</div></div>${thin}`
+      : `<div class="r-empty">No high-elo games against ${esc(c.opponent_name)} in this role yet.</div>`}`;
+  }
+
+  el("lv-counters").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-champ]");
+    if (!b) return;
+    el("lv-champ").value = b.dataset.champ;
+    load();
+  });
+
   async function load() {
+    loadCounters();
     const c = byName("lv-champ");
     if (!c) return;
     const role = el("lv-role").value;

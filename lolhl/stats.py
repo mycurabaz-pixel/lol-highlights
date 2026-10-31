@@ -237,6 +237,36 @@ def suggest(champion: int, role: str = "", opponent: int | None = None) -> dict:
     return out
 
 
+COUNTER_MIN = 8      # bir şampiyonun karşı pick listesine girmesi için gereken eşleşme maçı
+COUNTER_PRIOR = 20   # kazanma oranı az maçta %50'ye bu kadar "sanal maç" ile çekilir
+
+
+def counters(opponent: int, role: str, limit: int = 6) -> dict:
+    """`opponent`a karşı aynı koridorda (`role`) oynanan şampiyonların kazanma oranları.
+    En iyi ve en kötü pick'ler. Az maçlı eşleşmeler yanıltmasın diye oran %50'ye doğru
+    çekilerek sıralanır (8 maçta 7 galibiyet, 300 maçta %56'dan üstte görünmesin); ekranda
+    gerçek oran ve maç sayısı gösterilir. Son yamada yeterli veri yoksa tüm yamalara bakılır."""
+    cur = summary().get("patch")
+    sql = ("SELECT p.champion, COUNT(*), SUM(p.win) FROM parts p JOIN matches m ON m.id=p.match_id "
+           "WHERE m.queue=420 AND m.source='apex' AND p.opponent=? AND p.role=?")
+    with _db() as c:
+        rows, scope = [], cur
+        if cur:
+            rows = c.execute(sql + " AND m.patch=? GROUP BY 1", (opponent, role, cur)).fetchall()
+        if sum(n >= COUNTER_MIN for _, n, _ in rows) < 2 * limit:
+            rows, scope = c.execute(sql + " GROUP BY 1", (opponent, role)).fetchall(), "all patches"
+    ranked = []
+    for champ, n, wins in rows:
+        if n >= COUNTER_MIN:
+            score = (wins + COUNTER_PRIOR * 0.5) / (n + COUNTER_PRIOR)
+            ranked.append({"id": champ, "games": n, "wr": round(100 * wins / n, 1), "score": score})
+    ranked.sort(key=lambda r: r["score"], reverse=True)
+    best = ranked[:limit]
+    worst = [r for r in ranked[::-1][:limit] if r not in best]
+    return {"opponent": opponent, "role": role, "scope": scope, "games": sum(n for _, n, _ in rows),
+            "champions": len(ranked), "best": best, "worst": worst}
+
+
 def _aggregate(data: list[tuple], enough: int) -> dict:
     """Maç satırlarından rün sayfaları, başlangıç itemleri, item sırası ve itemler."""
     games = len(data)
