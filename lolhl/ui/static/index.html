@@ -48,7 +48,7 @@
   <section class="view hidden" id="view-match">
     <div class="view-head">
       <button class="btn ghost" id="back">← Matches</button>
-      <h1 id="m-title"></h1><span class="muted" id="m-sub"></span>
+      <h1 id="m-title"></h1><span id="m-res" class="hidden"></span><span class="muted" id="m-sub"></span>
       <div class="spacer"></div>
       <button class="btn ghost danger" id="m-delete">Delete match</button>
     </div>
@@ -118,6 +118,16 @@
         <ol class="clips" id="clips"></ol>
       </div>
     </div>
+
+    <!-- O maçın oyuncuları: oyun sırasında kaydedilen lig/LP -->
+    <section class="mp hidden" id="m-players">
+      <div class="an-head">
+        <h2>Players</h2><span class="muted small" id="mp-note"></span>
+        <div class="spacer"></div>
+        <div class="chip-row lv-queue" id="mp-queue"><button class="chip on" data-q="solo">Solo/Duo</button><button class="chip" data-q="flex">Flex</button></div>
+      </div>
+      <div id="mp-body"></div>
+    </section>
 
     <!-- Maç analizi: videonun altında, aşağı kaydırınca. Hepsi maç sonrası Riot verisi. -->
     <section class="analysis hidden" id="analysis">

@@ -10,3 +10,4 @@ replay_downloads.json
 *.notes.json
 stats.db
 cache/
+games/

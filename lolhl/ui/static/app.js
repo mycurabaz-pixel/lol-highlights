@@ -48,12 +48,13 @@ async function loadMatches() {
   grid.innerHTML = matches.map((m, i) => {
     const n = tagCounts(m.clips);
     const kda = m.kda ? `<span class="kda"><b>${m.kda[0]}</b> / <b>${m.kda[1]}</b> / <b>${m.kda[2]}</b></span>` : "";
+    const res = m.win == null ? "" : `<span class="res ${m.win ? "win" : "loss"}">${m.win ? "Win" : "Loss"}</span>`;
     return `<div class="card" data-i="${i}" style="background-image:${splashBg(esc(m.icon), +m.skin || 0)}">
       ${m.recording ? `<span class="badge-full">${i === 0 ? "Last game · " : ""}Full recording</span>` : ""}
       <span class="pill">${m.clips.length} clips</span>
       <div class="card-body">
         <div class="card-champ">${esc(m.champion)}</div>
-        <div class="card-meta">${kda}
+        <div class="card-meta">${res}${kda}
           <span style="color:var(--kill)">${n.kill} kills</span>
           <span style="color:var(--death)">${n.death} deaths</span>
           <span class="spacer"></span><span>${ago(m.created)}</span>
@@ -73,6 +74,8 @@ function visibleClips() {
 function openMatch(m, startMode = "clips") {
   current = m;
   $("#m-title").textContent = m.champion;
+  $("#m-res").className = m.win == null ? "hidden" : `res ${m.win ? "win" : "loss"}`;
+  $("#m-res").textContent = m.win == null ? "" : m.win ? "Win" : "Loss";
   $("#m-sub").textContent = `${m.kda ? m.kda.join(" / ") + " · " : ""}${m.match_id} · ${ago(m.created)}`;
   $("#back").textContent = m.external ? "← Replays" : "← Matches";
   $("#m-delete").classList.toggle("hidden", !!m.external);
@@ -84,7 +87,36 @@ function openMatch(m, startMode = "clips") {
   show("match");
   setMode(m.recording ? startMode : "clips");
   Analysis.load(m);
+  loadMatchPlayers(m);
 }
+
+// o maç oynanırken kaydedilen 10 oyuncu (lig, LP, kazanma oranı); Solo/Flex seçimi Live ile ortak
+let mpData = null;
+let mpQueue = "solo";
+async function loadMatchPlayers(m) {
+  const box = $("#m-players");
+  mpData = null;
+  box.classList.toggle("hidden", !!m.external);
+  if (m.external) return;
+  $("#mp-body").innerHTML = `<div class="r-empty">Loading...</div>`;
+  try { mpData = await api.match_players(m.match_id); } catch (e) { mpData = { players: null }; }
+  if (current !== m) return;
+  renderMatchPlayers();
+}
+function renderMatchPlayers() {
+  try { mpQueue = localStorage.getItem("lv-queue") || "solo"; } catch {}
+  document.querySelectorAll("#mp-queue .chip").forEach((b) => b.classList.toggle("on", b.dataset.q === mpQueue));
+  $("#mp-queue").classList.toggle("hidden", !mpData?.players);
+  $("#mp-body").innerHTML = mpData?.players ? Live.table(mpData.players, mpQueue, mpData.ddragon)
+    : `<div class="r-empty">Player ranks weren't saved for this match. They are saved for every game from now on, while the app is open.</div>`;
+  $("#mp-note").textContent = mpData?.saved ? "Ranks and LP as they were during this game" : "";
+}
+$("#mp-queue").onclick = (e) => {
+  const b = e.target.closest("[data-q]");
+  if (!b) return;
+  try { localStorage.setItem("lv-queue", b.dataset.q); } catch {}
+  renderMatchPlayers();
+};
 
 // oyun saati <-> video: tam maçta kaydın offset'i, klipte klibin kayıttaki başlangıcı
 function currentGameTime() {

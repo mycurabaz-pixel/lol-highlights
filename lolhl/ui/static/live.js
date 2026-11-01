@@ -390,6 +390,12 @@ const Live = (() => {
     el("lv-scout-note").textContent = sc.status === "error" ? sc.error
       : `${sc.source === "preview" ? "Your last match (preview)" : "Current game"}${sc.status === "done" ? ""
         : sc.status === "season games" ? " · counting this season's games..." : " · loading..."}`;
+    el("lv-scout").innerHTML = table(sc.players, queue);
+  }
+
+  // 10 oyuncunun tablosu; maç kayıtlarının altında da (o maçta kaydedilen bilgiyle) kullanılır
+  function table(players, queue, version) {
+    if (version) ver = ver || version;
     const rank = (r) => r ? `<b>${TIERS[r.tier] || r.tier}${["MASTER", "GRANDMASTER", "CHALLENGER"].includes(r.tier) ? "" : " " + r.rank}</b>
       <span class="muted">${r.lp} LP</span>` : `<span class="muted">Unranked</span>`;
     const wr = (r) => r ? `<b class="${wrOf(r.wins, r.losses) >= 50 ? "good" : "bad"}">${wrOf(r.wins, r.losses)}%</b>
@@ -408,7 +414,7 @@ const Live = (() => {
       : `<b>${m.level ? "M" + m.level : "—"}</b> <span class="muted">${m.points >= 1000 ? Math.round(m.points / 1000) + "k" : m.points} pts</span>`;
     const loaded = (p) => p.solo !== null || p.flex !== null || p.mastery;
     const team = (id, label) => {
-      const ps = sc.players.filter((p) => p.team === id);
+      const ps = players.filter((p) => p.team === id);
       return `<div class="lv-team ${id === 100 ? "blue" : "red"}"><div class="lv-row lv-th">
         <span>${label}</span><span>${QNAME[queue]}</span><span>Win rate</span><span>On this champion (${QNAME[queue]}, this season)</span><span>Mastery</span></div>
         ${ps.map((p) => `<div class="lv-row ${p.me ? "me" : ""}">
@@ -420,7 +426,7 @@ const Live = (() => {
           <span>${onChamp(p)}</span>
           <span>${mastery(p.mastery)}</span></div>`).join("")}</div>`;
     };
-    el("lv-scout").innerHTML = team(100, "Blue team") + team(200, "Red team");
+    return team(100, "Blue team") + team(200, "Red team");
   }
 
   el("lv-queue").addEventListener("click", (e) => {
@@ -485,5 +491,5 @@ const Live = (() => {
     try { await api.scout_preview(); tick(); } catch (e) { el("lv-scout-note").textContent = String(e).replace(/^Error: /, ""); }
   };
 
-  return { open };
+  return { open, table };
 })();

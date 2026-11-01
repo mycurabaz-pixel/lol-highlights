@@ -26,11 +26,13 @@ def process(m: MatchData, video: str, offset: float, cfg: dict, log=print, skin:
     kda = [sum(e.killer_id == me for e in kills), sum(e.victim_id == me for e in kills),
            sum(me in e.assist_ids for e in kills)]
 
+    me_info = next((p for p in (m.info.get("info") or {}).get("participants", []) if p.get("puuid") == m.me.puuid), {})
+
     paths = cut(video, clips, out_dir, cfg["clips"]["reencode"], tool_dir)
     save_raw(out_dir, m.info, m.timeline, m.me.puuid)
     (out_dir / "highlights.json").write_text(json.dumps({
         "match_id": m.match_id, "video": video, "offset": offset,
-        "champion": m.me.champion, "skin": skin, "kda": kda, "created": time.time(),
+        "champion": m.me.champion, "skin": skin, "kda": kda, "win": me_info.get("win"), "created": time.time(),
         "clips": [{"file": p.name, "start": c.start, "end": c.end,
                    "moments": [{"tag": h.tag, "game_time": h.game_time, "label": h.label}
                                for h in c.highlights]}

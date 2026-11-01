@@ -31,6 +31,7 @@ from ..riot_api import RiotApi
 from ..watcher import Watcher
 
 ROOT = Path(__file__).resolve().parents[2]
+GAMES = ROOT / "games"  # oyun sırasında toplanan 10 oyuncunun lig/LP bilgisi, maç başına bir dosya
 CONFIG = ROOT / "config.toml"
 STATIC = Path(__file__).parent / "static"
 DDRAGON_ALIASES = {"FiddleSticks": "Fiddlesticks"}
@@ -212,6 +213,14 @@ class Api:
             except (OSError, json.JSONDecodeError):
                 continue
             champ = meta.get("champion") or folder.name.rsplit("_", 1)[-1]
+            if "win" not in meta:  # eski kayıtlar: sonucu kayıtlı ham maç verisinden bir kez çıkar
+                raw = analysis.load_raw(folder) or {}
+                meta["win"] = next((p.get("win") for p in (raw.get("match") or {}).get("info", {}).get("participants", [])
+                                    if p.get("puuid") == raw.get("puuid")), None)
+                try:
+                    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+                except OSError:
+                    pass
             clips = []
             for c in meta.get("clips", []):
                 if not (folder / c["file"]).exists():
@@ -227,12 +236,20 @@ class Api:
             out.append({
                 "folder": folder.name, "match_id": meta.get("match_id", folder.name),
                 "champion": champ, "icon": DDRAGON_ALIASES.get(champ, champ), "skin": meta.get("skin") or 0,
-                "kda": meta.get("kda"), "offset": meta.get("offset", 0),
+                "kda": meta.get("kda"), "win": meta.get("win"), "offset": meta.get("offset", 0),
                 "created": meta.get("created") or meta_file.stat().st_mtime,
                 "clips": clips,
                 "recording": recordings.get(meta.get("match_id")),
             })
         return sorted(out, key=lambda m: m["created"], reverse=True)
+
+    def match_players(self, match_id: str):
+        """O maç oynanırken kaydedilen 10 oyuncu (lig, LP, kazanma oranı, ustalık); yoksa None."""
+        try:
+            data = json.loads((GAMES / f"{Path(match_id).name}.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        return {"ddragon": ddragon.version(), "players": data.get("players"), "saved": data.get("saved")}
 
     def _folder(self, folder: str) -> Path:
         p = (clips_dir(self.cfg) / folder).resolve()
@@ -448,15 +465,36 @@ class Api:
                 guess = next((e for e, r in roles.items() if r == role), None)
                 out["pick"] = {"champion_id": cid, "role": role, "locked": bool(me.get("championId")),
                                "enemies": enemies, "opponent": guess}
-        if phase in ("InProgress", "Reconnect"):
-            game = (self._lcu.get("/lol-gameflow/v1/session") or {}).get("gameData", {}).get("gameId") or 0
-            sc = self._scout
-            # her yeni oyunda bir kez; liste alınırken (hesap sorguları sürebilir) arayüzü bekletmez
-            if not sc or sc.source != "live" or (game and sc.game != game):
-                threading.Thread(target=self._start_live_scout, args=(game,), daemon=True).start()
         if self._scout:
             out["scout"] = self._scout.snapshot()
         return out
+
+    def _live_loop(self) -> None:
+        """Live sekmesi açık olmasa da: oyun başlayınca 10 oyuncunun bilgisini toplar ve
+        maç kayıtlarının altında gösterilmek üzere games/<maç>.json'a yazar."""
+        saved = ""
+        while True:
+            try:
+                phase = self._lcu.phase()
+                if phase in ("InProgress", "Reconnect"):
+                    game = (self._lcu.get("/lol-gameflow/v1/session") or {}).get("gameData", {}).get("gameId") or 0
+                    sc = self._scout
+                    if not sc or sc.source != "live" or (game and sc.game != game):
+                        self._start_live_scout(game)
+                sc = self._scout
+                if sc and sc.source == "live" and sc.game:
+                    snap = sc.snapshot()
+                    body = json.dumps(snap["players"], sort_keys=True)
+                    if body != saved:  # değiştikçe yaz; oyun bitince son hâli kalır
+                        GAMES.mkdir(exist_ok=True)
+                        mid = f"{self.cfg['riot']['platform'].upper()}_{sc.game}"
+                        (GAMES / f"{mid}.json").write_text(json.dumps(
+                            {"match_id": mid, "saved": time.time(), "players": snap["players"]},
+                            ensure_ascii=False), encoding="utf-8")
+                        saved = body
+            except Exception as e:  # döngü ölmesin
+                self._log(f"Live players: {e}")
+            time.sleep(3)
 
     def _start_live_scout(self, game: int) -> None:
         # 2 sn'lik yoklamalar üst üste binerse ikinci bir bilgi toplayıcı başlatıp
@@ -696,6 +734,7 @@ def main() -> None:
     window.events.closing += on_closing
     api.start()
     api._start_collector()
+    threading.Thread(target=api._live_loop, daemon=True).start()
     webview.start(gui="edgechromium", debug=os.environ.get("LOLHL_DEBUG") == "1")
     api.stop()
     # watcher thread'i daemon; OBS'i kapatabilmesi için kısa süre bekle
