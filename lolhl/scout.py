@@ -32,20 +32,26 @@ def _champ_by_name(name: str) -> int | None:
 
 
 def live_players(lcu: Lcu, api: RiotApi) -> list[dict] | None:
-    """Oyundaki 10 oyuncu; oyun yoksa None."""
+    """Oyundaki 10 oyuncu; oyun yoksa None.
+
+    Client'ın verdiği puuid'ler kendi iç biçiminde (36 karakter); Riot web API'si onları
+    tanımaz (400). Bu yüzden her oyuncunun Riot ID'si (ad#etiket) alınıp web API'sinin
+    puuid'i Account-V1'den sorulur. İsimler oyun başladıktan sonra herkese açıktır."""
     if lcu.phase() not in ("InProgress", "Reconnect"):
         return None
-    me = (lcu.get("/lol-summoner/v1/current-summoner") or {}).get("puuid")
+    cur = lcu.get("/lol-summoner/v1/current-summoner") or {}
+    me = (cur.get("gameName", "").lower(), cur.get("tagLine", "").lower())
     gd = (lcu.get("/lol-gameflow/v1/session") or {}).get("gameData", {})
-    out = []
+    found = []  # (ad, etiket, takım, şampiyon, rol)
     for team, key in ((100, "teamOne"), (200, "teamTwo")):
         for p in gd.get(key) or []:
-            if p.get("puuid"):
-                out.append({"puuid": p["puuid"], "team": team, "champion_id": p.get("championId"),
-                            "role": (p.get("selectedPosition") or "").upper().replace("NONE", ""),
-                            "name": p.get("gameName") or p.get("summonerName") or ""})
-    if len(out) < 10:
-        out = []
+            s = lcu.get(f"/lol-summoner/v2/summoners/puuid/{p['puuid']}") if p.get("puuid") else None
+            if s and s.get("gameName"):
+                found.append((s["gameName"], s.get("tagLine", ""), team, p.get("championId"),
+                              (p.get("selectedPosition") or "").upper().replace("NONE", "")))
+    if len(found) < 10:
+        # client vermediyse oyunun kendi yerel listesi (oyun yüklendikten sonra açılır)
+        found = []
         try:
             r = requests.get("https://127.0.0.1:2999/liveclientdata/playerlist", verify=False, timeout=2)
             plist = r.json() if r.ok else []
@@ -53,13 +59,15 @@ def live_players(lcu: Lcu, api: RiotApi) -> list[dict] | None:
             plist = []
         for p in plist:
             name, _, tag = (p.get("riotId") or "").partition("#")
-            acc = api.account(name, tag) if name and tag else None
-            if acc:
-                out.append({"puuid": acc["puuid"], "team": 100 if p.get("team") == "ORDER" else 200,
-                            "champion_id": _champ_by_name(p.get("championName", "")),
-                            "role": p.get("position") or "", "name": name})
-    for p in out:
-        p["me"] = p["puuid"] == me
+            if name and tag:
+                found.append((name, tag, 100 if p.get("team") == "ORDER" else 200,
+                              _champ_by_name(p.get("championName", "")), p.get("position") or ""))
+    out = []
+    for name, tag, team, champ, role in found:
+        acc = api.account(name, tag)
+        if acc:
+            out.append({"puuid": acc["puuid"], "team": team, "champion_id": champ, "role": role,
+                        "name": name, "me": (name.lower(), tag.lower()) == me})
     return out or None
 
 
