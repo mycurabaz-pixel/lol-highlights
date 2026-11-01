@@ -45,9 +45,12 @@ const Live = (() => {
     timer = setInterval(() => (el("view-live").classList.contains("hidden") ? clearInterval(timer) : tick()), 2000);
   }
 
+  let ticking = false;     // önceki yoklama bitmeden yenisi gönderilmez
   async function tick() {
+    if (ticking) return;
+    ticking = true;
     let s;
-    try { s = await api.live(); } catch (e) { el("lv-phase").textContent = "Error"; return; }
+    try { s = await api.live(); } catch (e) { el("lv-phase").textContent = "Error"; return; } finally { ticking = false; }
     ver = s.ddragon;
     const [label, cls] = PHASES[s.phase] || [s.phase ? s.phase : "Client closed", ""];
     el("lv-phase").textContent = label;
@@ -133,14 +136,14 @@ const Live = (() => {
   // ---------- item gezgini: koridor rakibi + rakip takımın AP oranı aralığı ----------
   let xOpp = "lane";            // "lane" = koridor rakibine karşı, "any" = hepsi
   let xPreset = "any";
-  let xMin = 0, xMax = 1;       // rakip takımın büyü hasarı oranı aralığı
+  let xMin = 0, xMax = 1;       // rakip takımın büyü hasarı oranı aralığı (hazır gruplar)
+  let xCenter = null;           // tek nokta: bu AP oranının etrafı 20 maç olana kadar genişler
   let xLast = null;             // son yanıt (eşikler, şu anki takım, kaydırıcı aralığı)
   let xTimer = null;
   let xKey = "";
 
   const xPresets = (t) => ({
     any: [0, 1], ad: [0, t.thresholds[0]], mixed: [t.thresholds[0], t.thresholds[1]], ap: [t.thresholds[1], 1],
-    now: t.ap_now != null ? [Math.max(0, t.ap_now - 0.06), Math.min(1, t.ap_now + 0.06)] : null,
   });
 
   async function loadExplore() {
@@ -152,37 +155,40 @@ const Live = (() => {
     el("lv-x-oppname").textContent = opp ? opp.name : "—";
     el("lv-x-opp").querySelector('[data-xopp="lane"]').disabled = !opp;
     const useOpp = xOpp === "lane" && opp ? opp.id : null;
-    const key = `${c.id}|${el("lv-role").value}|${useOpp}|${xMin}|${xMax}|${enemies}`;
+    const key = `${c.id}|${el("lv-role").value}|${useOpp}|${xCenter ?? `${xMin}-${xMax}`}|${enemies}`;
     if (key === xKey) return;
     xKey = key;
     try {
-      const t = await api.item_table(c.id, el("lv-role").value, useOpp, xMin, xMax, enemies);
+      const t = await api.item_table(c.id, el("lv-role").value, useOpp, xMin, xMax, enemies, xCenter);
       if (xKey !== key) return;
       xLast = t;
-      // "şu anki takım" seçiliyse rakipler kilitledikçe aralık takımla birlikte kayar
-      if (xPreset === "now" && t.ap_now != null) {
-        const [a, b] = xPresets(t).now;
-        if (Math.abs(a - xMin) > 0.005) { xMin = a; xMax = b; xKey = ""; return loadExplore(); }
+      // "şu anki takım" seçiliyse rakipler kilitledikçe nokta takımla birlikte kayar
+      if (xPreset === "now" && t.ap_now != null && Math.abs(t.ap_now - xCenter) > 0.005) {
+        xCenter = t.ap_now; xKey = ""; return loadExplore();
       }
       renderExplore(t);
     } catch (e) { el("lv-x-body").innerHTML = `<div class="r-empty">${esc(String(e))}</div>`; }
   }
 
+  // tek nokta: sağa gittikçe rakip takımın büyü (AP) hasarı artar, fiziksel (AD) azalır.
+  // Dolgu, o noktanın etrafında 20 maça ulaşmak için kullanılan aralığı gösterir.
   function syncRange(t) {
     const [lo, hi] = t.ap_span.map((v) => Math.round(v * 100));
-    for (const id of ["lv-x-min", "lv-x-max"]) { el(id).min = lo; el(id).max = hi; }
+    const slider = el("lv-x-ap");
+    slider.min = lo; slider.max = hi;
     const clamp = (v) => Math.min(hi, Math.max(lo, Math.round(v * 100)));
-    el("lv-x-min").value = clamp(xMin);
-    el("lv-x-max").value = clamp(xMax);
+    const [a, b] = xCenter != null ? t.range : [xMin, xMax];
+    if (document.activeElement !== slider) slider.value = clamp(xCenter ?? (xMin + xMax) / 2);
     const pos = (v) => `${((clamp(v) - lo) / (hi - lo)) * 100}%`;
-    el("lv-x-fill").style.left = pos(xMin);
-    el("lv-x-fill").style.right = `calc(100% - ${pos(xMax)})`;
+    el("lv-x-fill").style.left = pos(a);
+    el("lv-x-fill").style.right = `calc(100% - ${pos(b)})`;
     const now = el("lv-x-nowmark");
     now.classList.toggle("hidden", t.ap_now == null);
     if (t.ap_now != null) now.style.left = pos(t.ap_now);
-    const show = (v, edge) => (v <= 0 || v >= 1 ? edge : `${Math.round(v * 100)}%`);
-    el("lv-x-readout").textContent = xMin <= 0 && xMax >= 1 ? "any"
-      : `${show(xMin, "0%")} – ${show(xMax, "100%")} magic`;
+    const p = (v) => Math.round(v * 100);
+    el("lv-x-readout").textContent = xCenter != null
+      ? `AP ${p(xCenter)}% · AD ${100 - p(xCenter)}% (±${p((b - a) / 2)}%)`
+      : xMin <= 0 && xMax >= 1 ? "any" : `AP ${p(xMin)}–${p(xMax)}%`;
     el("lv-x-now").disabled = t.ap_now == null;
     el("lv-x-now").textContent = t.ap_now == null ? "Current enemy team"
       : `Current enemy team (${Math.round(t.ap_now * 100)}% magic${t.partial ? ", partial" : ""})`;
@@ -199,7 +205,7 @@ const Live = (() => {
       <td class="num">${pct(it.pick)}</td><td class="num">${delta(it.delta)}</td>
       <td class="num">${pct(it.wr)}</td><td class="num muted">${it.games}</td></tr>`).join("");
     const filters = [t.opponent ? `vs ${esc(t.opponent_name)}` : "any opponent",
-      xMin <= 0 && xMax >= 1 ? "any enemy damage" : el("lv-x-readout").textContent];
+      xCenter == null && xMin <= 0 && xMax >= 1 ? "any enemy damage" : el("lv-x-readout").textContent];
     const head = `<div class="lv-x-head"><img src="${champImg(t.champion_key)}" alt="">
       <div><b>${t.games}</b> of ${t.all_games} ${esc(t.champion_name)} games match (${filters.join(", ")})
         · ${pct(t.wr)} win · ${t.scope === "all patches" ? "all patches" : `patch ${esc(t.scope)}`}
@@ -226,24 +232,23 @@ const Live = (() => {
   el("lv-x-presets").addEventListener("click", (e) => {
     const b = e.target.closest("[data-preset]");
     if (!b || b.disabled || !xLast) return;
-    const r = xPresets(xLast)[b.dataset.preset];
-    if (!r) return;
+    if (b.dataset.preset === "now") {
+      if (xLast.ap_now == null) return;
+      xCenter = xLast.ap_now;
+    } else {
+      const r = xPresets(xLast)[b.dataset.preset];
+      if (!r) return;
+      xCenter = null;
+      [xMin, xMax] = r;
+    }
     xPreset = b.dataset.preset;
-    [xMin, xMax] = r;
     loadExplore();
   });
-  for (const id of ["lv-x-min", "lv-x-max"]) {
-    el(id).addEventListener("input", () => {
-      let a = +el("lv-x-min").value, b = +el("lv-x-max").value;
-      if (a > b) id === "lv-x-min" ? (b = a, el("lv-x-max").value = b) : (a = b, el("lv-x-min").value = a);
-      // kaydırıcı ucuna çekilirse o taraf sınırsız sayılır
-      xMin = a <= +el(id).min ? 0 : a / 100;
-      xMax = b >= +el(id).max ? 1 : b / 100;
-      xPreset = "custom";
-      if (xLast) syncRange(xLast);
-      xReload();
-    });
-  }
+  el("lv-x-ap").addEventListener("input", () => {
+    xCenter = +el("lv-x-ap").value / 100;
+    xPreset = "custom";
+    xReload();
+  });
 
   async function load() {
     loadCounters();

@@ -84,6 +84,7 @@ class Scout:
         self.status = "loading"
         self.error = ""
         self.key = frozenset(p["puuid"] for p in players)
+        self.game = 0  # oyun kimliği (canlı oyunda); yeni oyunda yeniden başlatmak için
         self._stop = threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
 

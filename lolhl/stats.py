@@ -329,10 +329,15 @@ def _span(values: list[float], extra: float | None) -> list[float]:
     return [round(lo - 0.02, 2), round(hi + 0.02, 2)]
 
 
+WINDOW_GAMES = 20  # tek noktalı süzgeçte pencere bu kadar maç olana kadar genişler
+
+
 def item_table(champion: int, role: str = "", opponent: int | None = None,
-               ap_min: float = 0.0, ap_max: float = 1.0, enemies_now: list[int] | None = None) -> dict:
+               ap_min: float = 0.0, ap_max: float = 1.0, enemies_now: list[int] | None = None,
+               center: float | None = None) -> dict:
     """Seçilen şampiyonun maçlarını süzer: (isteğe bağlı) yalnızca `opponent` koridor rakibine
     karşı olanlar ve rakip takımın büyü hasarı oranı [ap_min, ap_max] aralığında olanlar.
+    `center` verilirse aralık onun etrafında (en az ±%3) WINDOW_GAMES maç olana kadar genişler.
     Her item için alınma ve kazanma oranı, ayrıca şampiyonun bütün maçlarına göre farkı."""
     role = role or main_role(champion)
     cur = summary().get("patch")
@@ -348,15 +353,21 @@ def item_table(champion: int, role: str = "", opponent: int | None = None,
             rows = c.execute(sql + " AND m.patch=?", (*args, cur)).fetchall() if patch_only else c.execute(sql, args).fetchall()
         teams = _teams({r[0] for r in rows})
         ap_of = {r[0]: team_ap(teams[(r[0], 1 - r[1])], profiles) for r in rows}
-        sel = [r for r in rows if (not opponent or r[5] == opponent)
-               and ap_of[r[0]] is not None and ap_min <= ap_of[r[0]] <= ap_max]
-        return rows, ap_of, sel
+        base = [r for r in rows if (not opponent or r[5] == opponent) and ap_of[r[0]] is not None]
+        lo, hi = ap_min, ap_max
+        if center is not None:
+            # merkeze en yakın WINDOW_GAMES maçı kapsayan en dar pencere (yüzde adımlarıyla)
+            d = sorted(abs(ap_of[r[0]] - center) for r in base)
+            w = max(0.03, math.ceil(d[WINDOW_GAMES - 1] * 100) / 100) if len(d) >= WINDOW_GAMES else 1.0
+            lo, hi = max(0.0, center - w), min(1.0, center + w)
+        sel = [r for r in base if lo <= ap_of[r[0]] <= hi]
+        return rows, ap_of, sel, (lo, hi)
 
-    # süzgeçler veriyi çok inceltiyor: son yamada süzgeçten 30 maçtan azı geçerse bütün yamalar
-    rows, ap_of, sel = load(True) if cur else ([], {}, [])
+    # süzgeçler veriyi çok inceltiyor: son yamada süzgeçten az maç geçerse bütün yamalar
+    rows, ap_of, sel, rng = load(True) if cur else ([], {}, [], (ap_min, ap_max))
     scope = cur
-    if len(sel) < 30:
-        rows, ap_of, sel = load(False)
+    if len(sel) < (WINDOW_GAMES if center is not None else 30):
+        rows, ap_of, sel, rng = load(False)
         scope = "all patches"
 
     def stats_of(data):
@@ -396,7 +407,8 @@ def item_table(champion: int, role: str = "", opponent: int | None = None,
         "more": sorted((i for i in items if (i["pick"] or 0) >= 10 and i["games"] >= 3 and i["delta"] >= 3),
                        key=lambda i: -i["delta"])[:5],
         "enough": n >= 20,
-        "range": [ap_min, ap_max],
+        "range": list(rng),
+        "center": center,
         "thresholds": list(_thresholds(profiles)),
         # kaydırıcının anlamlı bir aralık göstermesi için: bu şampiyonun maçlarındaki rakip takım AP oranları
         # (uçtaki %2 hariç) ve şu anki rakip takım

@@ -161,6 +161,7 @@ class Api:
         self._replays = replay.ReplayClient(self._lcu, ROOT / "replay_downloads.json")
         self._collector: stats.Collector | None = None
         self._scout: scout.Scout | None = None
+        self._scout_lock = threading.Lock()  # canlı oyuncu listesi aynı anda bir kez alınır
 
     def _log(self, msg: str) -> None:
         self._logs.append(time.strftime("%H:%M:%S ") + msg)
@@ -447,18 +448,38 @@ class Api:
                 guess = next((e for e, r in roles.items() if r == role), None)
                 out["pick"] = {"champion_id": cid, "role": role, "locked": bool(me.get("championId")),
                                "enemies": enemies, "opponent": guess}
-        if phase in ("InProgress", "Reconnect") and (not self._scout or self._scout.source != "live"):
-            players = scout.live_players(self._lcu, self._riot())
-            if players:
-                self._start_scout(players, "live")
+        if phase in ("InProgress", "Reconnect"):
+            game = (self._lcu.get("/lol-gameflow/v1/session") or {}).get("gameData", {}).get("gameId") or 0
+            sc = self._scout
+            # her yeni oyunda bir kez; liste alınırken (hesap sorguları sürebilir) arayüzü bekletmez
+            if not sc or sc.source != "live" or (game and sc.game != game):
+                threading.Thread(target=self._start_live_scout, args=(game,), daemon=True).start()
         if self._scout:
             out["scout"] = self._scout.snapshot()
         return out
 
-    def _start_scout(self, players: list[dict], source: str) -> None:
+    def _start_live_scout(self, game: int) -> None:
+        # 2 sn'lik yoklamalar üst üste binerse ikinci bir bilgi toplayıcı başlatıp
+        # yüklenmiş ligleri sıfırlamasın
+        if not self._scout_lock.acquire(blocking=False):
+            return
+        try:
+            sc = self._scout
+            if sc and sc.source == "live" and (not game or sc.game == game):
+                return
+            players = scout.live_players(self._lcu, self._riot())
+            if players:
+                self._start_scout(players, "live", game)
+        except Exception as e:  # ağ hatası vb.; sonraki yoklamada yeniden denenir
+            self._log(f"Live players: {e}")
+        finally:
+            self._scout_lock.release()
+
+    def _start_scout(self, players: list[dict], source: str, game: int = 0) -> None:
         if self._scout:
             self._scout.stop()
         self._scout = scout.Scout(self._riot(), players, source)
+        self._scout.game = game
 
     def scout_preview(self):
         """Canlı oyun yokken ekranı denemek için son maçın 10 oyuncusu."""
@@ -495,10 +516,13 @@ class Api:
                 "champion_id": int(champion_id), "role_name": ROLE_NAMES.get(s["role"], "")}
 
     def item_table(self, champion_id: int, role: str = "", opponent_id: int | None = None,
-                   ap_min: float = 0.0, ap_max: float = 1.0, enemies: list | None = None):
-        """Koridor rakibine ve/veya rakip takımın AP oranı aralığına göre item tablosu."""
+                   ap_min: float = 0.0, ap_max: float = 1.0, enemies: list | None = None,
+                   center: float | None = None):
+        """Koridor rakibine ve/veya rakip takımın AP oranına göre item tablosu; `center` verilirse
+        aralık o AP oranının etrafında 20 maç olana kadar kendiliğinden genişler."""
         t = stats.item_table(int(champion_id), role, int(opponent_id) if opponent_id else None,
-                             float(ap_min), float(ap_max), [int(e) for e in enemies or []])
+                             float(ap_min), float(ap_max), [int(e) for e in enemies or []],
+                             float(center) if center is not None else None)
         items = ddragon.items()
         for key in ("boots", "items", "more"):
             for it in t[key]:

@@ -259,11 +259,12 @@
               <button class="chip" data-preset="mixed">Mixed</button><button class="chip" data-preset="ap">AP-heavy</button>
               <button class="chip" data-preset="now" id="lv-x-now" disabled title="Available once enemies lock champions">Current enemy team</button>
               <button class="chip" data-preset="custom" disabled>Custom</button></div></div>
-          <div class="lv-x-row"><span class="muted small lv-x-label">Magic damage share</span>
+          <div class="lv-x-row"><span class="muted small lv-x-label">Enemy damage mix</span>
             <div class="lv-x-range">
+              <span class="lv-x-end">AD</span>
               <div class="lv-x-track" id="lv-x-track"><div class="lv-x-fill" id="lv-x-fill"></div><div class="lv-x-now" id="lv-x-nowmark" title="Current enemy team"></div>
-                <input type="range" id="lv-x-min" min="0" max="100" step="1" value="0" aria-label="Minimum enemy magic damage %">
-                <input type="range" id="lv-x-max" min="0" max="100" step="1" value="100" aria-label="Maximum enemy magic damage %"></div>
+                <input type="range" id="lv-x-ap" min="0" max="100" step="1" value="50" aria-label="Enemy team magic damage %"></div>
+              <span class="lv-x-end">AP</span>
               <span class="lv-x-readout" id="lv-x-readout"></span></div></div>
         </div>
         <div id="lv-x-body"></div>
